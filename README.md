@@ -122,22 +122,28 @@ python -m era5_levels.main --config configs/base_0p25.yaml \
 
 ---
 
-## What's validated vs. what needs the cluster (be honest with yourself)
+## Status: nothing real is validated until the cluster
 
-**Validated locally** (pure Python, no beast/GPU): config loading + channel
-derivation (`--dry-run`), the level layout, the frozen-core freeze/load logic,
-and the subset channel-index maths (`run_subset_eval.py --check-indices`).
+Be clear-eyed — this is scaffold. **Nothing has actually been run end-to-end.**
+The model and data are sharded across GPUs (channels over `JChannel`, longitude
+over `JSpatial`), so the full field never exists on a single rank and **cannot be
+built, trained, or evaluated off-cluster at all** — not even at reduced scale.
+That covers everything that matters: model build, dataloader, the training step,
+and **all evaluation** (metrics are computed on local shards and reduced —
+spatial means `all_reduce`'d over `JSpatial`, per-variable RMSE `all_gather`'d
+over `JChannel`, mirroring beast's own reductions; swap to `beast.evaluation`
+once it stabilises).
 
-**Inherently distributed — only runs on the cluster, in the mesh** (cannot run
-off-cluster, and the field cannot be gathered onto one GPU): the model build,
-dataloader, training step, **and all evaluation**. Metrics are computed on local
-shards and reduced across the groups (spatial means `all_reduce`'d over
-`JSpatial`, per-variable results `all_gather`'d over `JChannel`) — mirroring
-beast's own reductions; swap to `beast.evaluation` once it stabilises. The code
-targets the beast/BellBeast APIs as they exist today, but beast is mid-rename
-(`gb` → `beast`) and mid-refactor; **`beast_api.py` is the single place** to
-adjust if an import or signature has moved. Treat `submit_smoke.sh` as the
-integration test: get it green before launching the 0.25° pair.
+The *only* things that execute off-cluster are a couple of **pure-Python sanity
+checks** with no beast/GPU/data involved — `--dry-run` (config + channel
+arithmetic) and `--check-indices` (the 37→13 channel index map). They confirm
+bookkeeping, nothing more.
+
+So the first real validation is on the cluster: the code targets the
+beast/BellBeast APIs as they exist today, but beast is mid-rename (`gb` →
+`beast`) and mid-refactor, so expect to fix imports/signatures —
+**`beast_api.py` is the single place** to do that. **Treat `submit_smoke.sh` as
+the integration test and get it green before launching the 0.25° pair.**
 
 This repo intentionally does **not** vendor or modify beast's model/dataloader —
 those come from your `pip install -e` checkout, so beast fixes flow in for free.
