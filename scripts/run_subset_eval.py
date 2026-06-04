@@ -1,83 +1,105 @@
-"""Free 13-vs-37 subset evaluation (run offline, after training).
+"""Free 13-vs-37 subset evaluation — DISTRIBUTED, run on the cluster.
 
-The headline result: a 37-level model is scored on EXACTLY the 13 standard
-levels (a subset of its outputs), so it is compared to the 13-level model on
-identical variables/levels — no extra training.
+Because the model + data are sharded across GPUs (jigsaw: channels over JChannel,
+longitude over JSpatial), this cannot run on a single GPU. It launches inside the
+same process mesh as training, rebuilds the (sharded) model, loads the sharded
+checkpoint for each rank, and computes per-variable RMSE reduced across the mesh
+— restricted to the 13 standard levels so a trained 37-level model is scored on
+exactly the variables/levels the 13-level model predicts. No retraining.
 
-This script is deliberately framework-light: it takes two arrays of predictions
-and the matching targets (already de-normalised or in normalised units — be
-consistent) and prints per-variable RMSE plus the 13-vs-37 difference. How you
-*produce* the predictions depends on your eval setup (single-GPU checkpoint
-reload, or beast's distributed validate once stable); this handles the scoring
-and the channel bookkeeping, which is the easy-to-get-wrong part.
+Run it like a training job (one task per GPU, same mesh_dims as the run you are
+evaluating):
 
-Example
--------
-    # pred37: (B, 228, H, W) from the 37-level model
-    # pred13: (B, 84,  H, W) from the 13-level model
-    # truth : the ground-truth fields for each
-    python -c "..."  # or import the functions below
+    srun python -u scripts/run_subset_eval.py \\
+        --config configs/base_0p25.yaml --overlay configs/levels37.yaml \\
+        --results-dir $WS/results/<partition>/<jobid>
+
+Index-only sanity check (pure Python, no GPU/beast — just the channel maths):
+
+    python scripts/run_subset_eval.py --check-indices
 """
 
 from __future__ import annotations
 
 import argparse
 
-import numpy as np
 import torch
 
-from era5_levels.evaluate import evaluate_fields, latitude_weights, subset_indices
 from era5_levels.variable_layout import PRESSURE_LEVELS_13, PRESSURE_LEVELS_37
 
 
-def subset_37_to_13(pred37: torch.Tensor) -> torch.Tensor:
-    """Select the 13-standard-level channels from a 37-level prediction."""
+def check_indices():
+    """Print where the 13 standard levels land inside the 37-level layout."""
+    from era5_levels.evaluate import subset_indices
     idx = subset_indices(PRESSURE_LEVELS_37, PRESSURE_LEVELS_13)
-    return pred37[:, idx]
+    print(f"37-level layout has {6 + 6 * len(PRESSURE_LEVELS_37)} channels; "
+          f"13-level subset selects {len(idx)} of them.")
+    print("first/last subset channel indices:", idx[:6].tolist(), "...", idx[-3:].tolist())
 
 
-def compare(pred13, truth13, pred37, truth37):
-    """Per-variable RMSE for both models on the shared 13 levels + their delta.
+def run_distributed(args):
+    import torch.distributed as dist
 
-    pred37/truth37 are full 37-level fields; they are subset to the 13 levels
-    internally so both models are scored on the same targets.
-    """
-    w = latitude_weights(pred13.shape[-2], device=pred13.device)
-    p37 = subset_37_to_13(pred37)
-    t37 = subset_37_to_13(truth37)
+    from era5_levels import beast_api
+    from era5_levels.config import finalize_config, load_config
+    from era5_levels.evaluate import validate_per_level
+    from era5_levels.train import build_model
 
-    r13 = evaluate_fields(pred13, truth13, PRESSURE_LEVELS_13, weights=w)
-    r37 = evaluate_fields(p37, t37, PRESSURE_LEVELS_13, weights=w)
+    cfg = finalize_config(load_config(args.config, args.overlay))
+    beast_api.bootstrap_distributed(cfg["mesh_dims"])
+    _, get_pg = beast_api.get_comm()
+    groups = {n: get_pg(n) for n in
+              ("JSpatial", "JChannel", "DTP", "SP", "DP", "DDP", "Expert")}
+    utils = beast_api.get_utils()
+    Expert = beast_api.get_expert_class()
+    get_dataloader = beast_api.get_dataloader_fn()
 
-    names = r13["names"]
-    print(f"{'variable':30s} {'rmse_13':>10s} {'rmse_37':>10s} {'Δ(37-13)':>10s}")
-    for i, name in enumerate(names):
-        a, b = r13["rmse"][i].item(), r37["rmse"][i].item()
-        print(f"{name:30s} {a:10.4f} {b:10.4f} {b - a:+10.4f}")
-    print(f"\nmean RMSE  13-level: {r13['rmse'].mean():.4f}   "
-          f"37-level (on 13): {r37['rmse'].mean():.4f}")
-    return r13, r37
+    dtype = utils.set_dtype(cfg["training"]["dtype"])
+    device = torch.device("cuda", torch.cuda.current_device())
 
+    model = build_model(cfg, device, dtype, groups)
+    model = Expert(model, groups["Expert"])
 
-def _demo():
-    """Shape-only demo with random data so the script runs without checkpoints."""
-    B, H, W = 2, 32, 64
-    n13 = 6 + 6 * len(PRESSURE_LEVELS_13)
-    n37 = 6 + 6 * len(PRESSURE_LEVELS_37)
-    g = torch.Generator().manual_seed(0)
-    compare(torch.randn(B, n13, H, W, generator=g),
-            torch.randn(B, n13, H, W, generator=g),
-            torch.randn(B, n37, H, W, generator=g),
-            torch.randn(B, n37, H, W, generator=g))
+    # load this rank's checkpoint shard (beast saves per ep/jchannel rank)
+    state = utils.load_latest_model_states(args.results_dir)[0]
+    # strip a possible DDP "module." prefix
+    state = {k[7:] if k.startswith("module.") else k: v for k, v in state.items()}
+    model.load_state_dict(state, strict=False)
+
+    valid_dl = get_dataloader(cfg, groups["DTP"].rank(), groups["DTP"].size(),
+                              groups["DP"].rank(), groups["DP"].size(),
+                              mode="validation", dtype=dtype)
+
+    # per-variable std (physical units) if available on the dataset
+    ds = getattr(valid_dl, "dataset", None)
+    data_std = getattr(ds, "norm_values", {}).get("std") if ds is not None else None
+
+    names, rmse = validate_per_level(
+        model, valid_dl, cfg["data"]["pressure_levels"], groups, device,
+        subset_levels=PRESSURE_LEVELS_13, data_std=data_std,
+    )
+    if dist.get_rank() == 0:
+        print(f"{'variable':32s} {'rmse':>12s}")
+        for n, v in zip(names, rmse.tolist()):
+            print(f"{n:32s} {v:12.4f}")
+        print(f"\nmean RMSE over 13 common levels: {rmse.mean().item():.4f}")
+    dist.barrier()
+    dist.destroy_process_group()
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--demo", action="store_true",
-                    help="run a random-data shape demo (no checkpoints needed)")
+    ap.add_argument("--check-indices", action="store_true",
+                    help="pure-Python channel-index sanity check (no GPU/beast)")
+    ap.add_argument("--config")
+    ap.add_argument("--overlay", action="append", default=[])
+    ap.add_argument("--results-dir", help="run dir containing checkpoints/ to evaluate")
     args = ap.parse_args()
-    if args.demo:
-        _demo()
+
+    if args.check_indices:
+        check_indices()
+    elif args.config and args.results_dir:
+        run_distributed(args)
     else:
-        print("Wire up your prediction loading, then call compare(...). "
-              "Run with --demo to see the scoring on random data.")
+        ap.error("give --check-indices, or --config + --results-dir for the "
+                 "distributed evaluation.")

@@ -34,7 +34,8 @@ compare — you don't need convergence, you need parity.
 1. **Headline 13 vs 37** — train the matched pair, compare per-level RMSE/ACC.
 2. **Free subset-eval** — score the 37-level model on *exactly* the 13 standard
    levels (a subset of its outputs) vs the 13-level model. No extra training.
-   See [`scripts/run_subset_eval.py`](scripts/run_subset_eval.py).
+   Runs **distributed in the mesh** (the field is sharded and can't be gathered
+   to one GPU); see [`scripts/run_subset_eval.py`](scripts/run_subset_eval.py).
 3. **Frozen-core transfer** — freeze a trained core, retrain *only* the two I/O
    convs for the other level count. Isolates whether benefit lives in the
    representation or the I/O. Cheap (≈2 conv layers). Set `transfer.source_checkpoint`
@@ -83,8 +84,11 @@ export DATA_DIR=/path/to/zarr_root ; export WORKDIR=$(pwd)
 sbatch slurm/submit_train.sh configs/base_0p25.yaml configs/levels13.yaml
 sbatch slurm/submit_train.sh configs/base_0p25.yaml configs/levels37.yaml
 
-# 3. headline comparison (offline, after both finish)
-python scripts/run_subset_eval.py --demo     # see the scoring on random data first
+# 3. headline comparison (DISTRIBUTED, same mesh as training, after both finish)
+python scripts/run_subset_eval.py --check-indices    # pure-python channel-index sanity
+srun python -u scripts/run_subset_eval.py \
+    --config configs/base_0p25.yaml --overlay configs/levels37.yaml \
+    --results-dir $WS/results/<partition>/<jobid>
 ```
 
 The only config difference between the two runs is the overlay
@@ -120,15 +124,18 @@ python -m era5_levels.main --config configs/base_0p25.yaml \
 
 **Validated locally** (pure Python, no beast/GPU): config loading + channel
 derivation (`--dry-run`), the level layout, the frozen-core freeze/load logic,
-and the subset-eval scoring (`run_subset_eval.py --demo`).
+and the subset channel-index maths (`run_subset_eval.py --check-indices`).
 
-**Needs a first debugging pass on HoreKa** (cannot run off-cluster): anything
-that imports `beast`/`jigsaw` and launches a process group — i.e. the actual
-model build, dataloader, and training step. The code targets the beast/BellBeast
-APIs as they exist today, but beast is mid-rename (`gb` → `beast`) and mid-
-refactor; **`beast_api.py` is the single place** to adjust if an import or
-signature has moved. Treat `submit_smoke.sh` as the integration test: get it
-green before launching the 0.25° pair.
+**Inherently distributed — only runs on the cluster, in the mesh** (cannot run
+off-cluster, and the field cannot be gathered onto one GPU): the model build,
+dataloader, training step, **and all evaluation**. Metrics are computed on local
+shards and reduced across the groups (spatial means `all_reduce`'d over
+`JSpatial`, per-variable results `all_gather`'d over `JChannel`) — mirroring
+beast's own reductions; swap to `beast.evaluation` once it stabilises. The code
+targets the beast/BellBeast APIs as they exist today, but beast is mid-rename
+(`gb` → `beast`) and mid-refactor; **`beast_api.py` is the single place** to
+adjust if an import or signature has moved. Treat `submit_smoke.sh` as the
+integration test: get it green before launching the 0.25° pair.
 
 This repo intentionally does **not** vendor or modify beast's model/dataloader —
 those come from your `pip install -e` checkout, so beast fixes flow in for free.

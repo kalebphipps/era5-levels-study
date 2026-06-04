@@ -25,6 +25,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
 from . import beast_api
+from .evaluate import validate_per_level
 from .losses import LatitudeWeightedMSE
 from .transfer import freeze_core, load_core_from_checkpoint
 
@@ -151,6 +152,12 @@ def training_loop(cfg):
             vloss = validate(valid_dl, model, loss_fn, sqrt_w, device, groups["DTP"])
             if is_root:
                 print(f"epoch {epoch}: valid weighted-MSE {vloss:.5f}")
+            # distributed per-variable RMSE (reduced over JSpatial, gathered over
+            # JChannel — never gathers the full field onto one rank)
+            names, rmse = validate_per_level(
+                model, valid_dl, cfg["data"]["pressure_levels"], groups, device)
+            if is_root:
+                print(f"epoch {epoch}: mean per-variable RMSE {rmse.mean().item():.5f}")
 
 
 def train_one_epoch(cfg, epoch, dl, model, optimizer, loss_fn, sqrt_w, device,
