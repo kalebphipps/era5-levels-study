@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "era5-levels-study"
+version = "0.0.1"
+description = "Does 37 vs 13 ERA5 pressure levels matter? A deterministic SWIN study built on beast."
+readme = "README.md"
+requires-python = ">=3.12"
+
+# NOTE: `beast` (and its deps jigsaw + torch_blue) is installed SEPARATELY and
+# editable from your own checkout:  pip install -e /path/to/beast
+# It is intentionally not listed here so this package doesn't try to resolve the
+# in-flux beast package from a registry.
+dependencies = [
+    "torch",
+    "numpy",
+    "pyyaml",
+    "xarray",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["era5_levels"]
+
+[tool.ruff]
+target-version = "py312"
