@@ -31,7 +31,9 @@ compare — you don't need convergence, you need parity.
 
 ## Three results, increasing cost
 
-1. **Headline 13 vs 37** — train the matched pair, compare per-level RMSE/ACC.
+1. **Headline 13 vs 37** — train the matched pair, compare per-variable
+   latitude-weighted RMSE at each level. (ACC is a natural add but needs a
+   sharded climatology field — not implemented yet; RMSE is what's wired today.)
 2. **Free subset-eval** — score the 37-level model on *exactly* the 13 standard
    levels (a subset of its outputs) vs the 13-level model. No extra training.
    Runs **distributed in the mesh** (the field is sharded and can't be gathered
@@ -52,7 +54,7 @@ era5_levels/
   beast_api.py         # the ONLY place that imports beast (beast→gb fallback, dist bootstrap)
   losses.py            # latitude-weighted MSE (deterministic loss)
   train.py             # deterministic training loop (adapted from BellBeast, beast APIs)
-  evaluate.py          # study-local per-level RMSE/ACC + subset-index helper
+  evaluate.py          # DISTRIBUTED per-variable RMSE (shard-local + JSpatial/JChannel reductions) + subset indexing
   transfer.py          # frozen-core transfer (freeze all but patch_embedding/recovery)
   main.py              # entrypoint: bootstrap dist+mesh -> training_loop
 configs/
@@ -65,7 +67,7 @@ slurm/
   submit_smoke.sh      # 1-GPU end-to-end smoke job
   submit_train.sh      # multi-GPU training (HoreKa TEAL/Ruby)
 scripts/
-  run_subset_eval.py   # the free 37→13 comparison
+  run_subset_eval.py   # free 37→13 comparison — distributed entrypoint (+ --check-indices)
 ```
 
 ## Setup & run (HoreKa)
