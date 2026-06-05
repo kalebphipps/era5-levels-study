@@ -56,6 +56,10 @@ training:
     timings: False
     checkpoint_interval: 1000
     flash_attn: True
+    # Validation logs per-variable RMSE + persistence/climatology baselines to
+    # <results>/metrics.csv each epoch (for offline poster plots). Optionally
+    # dump full (lat,lon) prediction/truth/error maps for a few variables:
+    # dump_maps_vars: ["geopotential_500", "2m_temperature", "temperature_850"]
 
 jigsaw:
     parallelism: 8                          # = jspatial * jchannel (must match mesh_dims)

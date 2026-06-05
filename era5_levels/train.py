@@ -25,7 +25,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
 from . import beast_api
-from .evaluate import validate_per_level
+from .evaluate import dump_sample_maps, evaluate_all, write_metrics_csv
 from .losses import LatitudeWeightedMSE
 from .transfer import freeze_core, load_core_from_checkpoint
 
@@ -152,12 +152,26 @@ def training_loop(cfg):
             vloss = validate(valid_dl, model, loss_fn, sqrt_w, device, groups["DTP"])
             if is_root:
                 print(f"epoch {epoch}: valid weighted-MSE {vloss:.5f}")
-            # distributed per-variable RMSE (reduced over JSpatial, gathered over
-            # JChannel — never gathers the full field onto one rank)
-            names, rmse = validate_per_level(
-                model, valid_dl, cfg["data"]["pressure_levels"], groups, device)
+            # distributed per-variable RMSE + persistence/climatology baselines
+            # (reduced over JSpatial, gathered over JChannel — the full field is
+            # never gathered onto one rank)
+            names, metrics = evaluate_all(
+                model, valid_dl, cfg["data"]["pressure_levels"], groups, device,
+                n_in_timesteps=cfg["data"]["n_in_timesteps"], baselines=True)
             if is_root:
-                print(f"epoch {epoch}: mean per-variable RMSE {rmse.mean().item():.5f}")
+                msg = "  ".join(f"{k}={v.mean().item():.4f}" for k, v in metrics.items())
+                print(f"epoch {epoch}: mean RMSE  {msg}")
+                # long-format CSV for offline plots (per-level curves, heatmaps)
+                write_metrics_csv(os.path.join(results_path, "metrics.csv"),
+                                  epoch, names, metrics)
+
+            # optional sample-field maps for the poster (gathered over JSpatial)
+            dump_vars = cfg["training"].get("dump_maps_vars")
+            if dump_vars:
+                dump_sample_maps(
+                    model, valid_dl, cfg["data"]["pressure_levels"], groups,
+                    device, dump_vars,
+                    os.path.join(results_path, "maps", f"epoch_{epoch}"))
 
 
 def train_one_epoch(cfg, epoch, dl, model, optimizer, loss_fn, sqrt_w, device,

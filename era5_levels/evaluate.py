@@ -9,15 +9,34 @@ training: each rank computes metrics on its local shard, and we reduce:
   * area-weighted spatial means  ->  all_reduce(SUM) over JSpatial  (longitude shards)
   * per-variable assembly        ->  all_gather over JChannel        (channel shards)
 
-This mirrors beast's own `reduce_spatial_mean` / `gather_*` reductions. Prefer
-`beast.evaluation` once that subpackage stabilises; this is the small, study-
-local version so the poster isn't blocked on it.
+This mirrors beast's own reductions. Prefer ``beast.evaluation`` once that
+subpackage stabilises; this is the small, study-local version so the poster
+isn't blocked on it.
 
 Latitude is NOT sharded (only longitude is), so the cos-latitude weights are the
 full-height vector and identical on every rank.
+
+What's here:
+  - per-variable RMSE of the model (`validate_per_level` / `evaluate_all`);
+  - cheap baselines for context on the plots — **persistence** and a self-
+    computed **climatology** (no external files needed);
+  - per-epoch metric logging to CSV (rank 0) so all the curves/heatmaps can be
+    drawn offline;
+  - a sample-field map dump (gather one variable's lat/lon field over JSpatial)
+    for the poster's forecast/error maps.
+
+NOTE: like everything beast-touching in this repo, the distributed paths here are
+untested off-cluster. Two layout assumptions are flagged inline and must be
+confirmed on the first real run: (a) channels are split contiguously by JChannel
+rank in `build_ordered_variables` order; (b) the dataloader lays the input out as
+[timestep-0 vars, timestep-1 vars, ..., constant masks], all channel-sharded the
+same way as the output.
 """
 
 from __future__ import annotations
+
+import csv
+import os
 
 import numpy as np
 import torch
@@ -64,12 +83,25 @@ def gather_channels(local_vec: torch.Tensor, channel_group) -> torch.Tensor:
     return torch.cat(parts, dim=0)
 
 
+def gather_spatial_field(field: torch.Tensor, spatial_group) -> torch.Tensor:
+    """Gather a (lat, lon_local) field into the full (lat, lon) over JSpatial.
+
+    Used for sample-map dumps. Concatenates along the longitude (last) axis in
+    JSpatial-rank order. Safe to call with a 1-process group (returns as-is).
+    """
+    if not dist.is_initialized() or dist.get_world_size(spatial_group) <= 1:
+        return field
+    parts = [torch.empty_like(field) for _ in range(dist.get_world_size(spatial_group))]
+    dist.all_gather(parts, field.contiguous(), group=spatial_group)
+    return torch.cat(parts, dim=-1)
+
+
 def subset_indices(levels_full, levels_subset) -> torch.Tensor:
     """Global channel indices of `levels_subset` within the `levels_full` layout.
 
     Pure index bookkeeping (no tensors/sharding) — used to pick the 13 standard
-    levels out of the assembled 37-level RMSE vector. Surface variables (level-
-    independent) are always included.
+    levels out of the assembled 37-level vectors. Surface variables are always
+    included.
     """
     full = build_ordered_variables(levels_full)
     sub = build_ordered_variables(levels_subset)
@@ -81,46 +113,147 @@ def subset_indices(levels_full, levels_subset) -> torch.Tensor:
     return torch.tensor([pos[n] for n in sub], dtype=torch.long)
 
 
-@torch.no_grad()
-def validate_per_level(model, dataloader, levels_full, groups, device,
-                       subset_levels=None, data_std=None) -> tuple[list[str], torch.Tensor]:
-    """Distributed per-variable RMSE over the validation set.
+def persistence_prediction(x: torch.Tensor, n_in_timesteps: int,
+                           n_local_vars: int) -> torch.Tensor:
+    """The most-recent input timestep's variables, as a 'no change' forecast.
 
-    Each rank scores its local channel/longitude shard; we reduce spatially over
-    JSpatial and gather over JChannel to get a global per-variable RMSE vector on
-    every rank. If `subset_levels` is given (e.g. the 13 standard levels), the
-    returned vector/names are restricted to that subset — this is the *free*
-    13-vs-37 comparison (no retraining): run the trained 37-level model and read
-    off the 13 common levels.
-
-    Returns (variable_names, rmse_vector). RMSE is in normalised units unless
-    `data_std` (per global channel) is supplied, in which case it is scaled to
-    physical units.
+    Persistence (tomorrow = today) is the cheapest baseline; any useful model
+    must beat it. Assumes the local input is laid out as
+    ``[ts0 vars | ts1 vars | ... | masks]`` (all channel-sharded like the output),
+    so the latest timestep's local variables are the block ending at
+    ``n_in_timesteps * n_local_vars``. CONFIRM this layout on the first run.
     """
-    model.eval()
-    spatial_group, channel_group = groups["JSpatial"], groups["JChannel"]
+    end = n_in_timesteps * n_local_vars
+    return x[:, end - n_local_vars:end]
 
+
+@torch.no_grad()
+def _accumulate_climatology(dataloader, device) -> torch.Tensor | None:
+    """Time-mean target field per local channel over the eval set (local only).
+
+    Each (channel, lat, lon) element is averaged over time independently, so no
+    cross-rank reduction is needed. This is an in-sample climatology baseline
+    (computed on the same set it scores) — fine for poster context; note it as
+    such. Returns (C_local, lat, lon_local) or None if the set is empty.
+    """
+    total = None
+    n = 0
+    for batch in dataloader:
+        y = batch[1].to(device)
+        s = y.sum(dim=0)
+        total = s if total is None else total + s
+        n += y.shape[0]
+    return None if total is None else total / max(1, n)
+
+
+@torch.no_grad()
+def evaluate_all(model, dataloader, levels_full, groups, device, *,
+                 n_in_timesteps: int = 1, baselines: bool = True,
+                 subset_levels=None, data_std=None) -> tuple[list[str], dict]:
+    """Distributed per-variable RMSE for the model (+ optional baselines).
+
+    Returns (variable_names, {metric: rmse_vector}) with metric in
+    {"model", "persistence", "climatology"} (the latter two only if
+    ``baselines``). RMSE is normalised-unit unless ``data_std`` (per global
+    channel) is given, then physical units. If ``subset_levels`` is set (e.g. the
+    13 standard levels), names/vectors are restricted to that subset — the free
+    13-vs-37 comparison.
+    """
+    spatial_group, channel_group = groups["JSpatial"], groups["JChannel"]
+    clim = _accumulate_climatology(dataloader, device) if baselines else None
+
+    model.eval()
+    keys = ["model"] + (["persistence", "climatology"] if baselines else [])
     weights = None
-    sq_acc = None
+    acc = {k: None for k in keys}
     n_batches = 0
     for batch in dataloader:
         x, y = batch[0].to(device), batch[1].to(device)
         pred = model(x)
         if weights is None:
             weights = latitude_weights(pred.shape[-2], device=pred.device)
-            sq_acc = torch.zeros(pred.shape[1], device=pred.device)
-        sq_acc += reduce_spatial_mean((pred - y) ** 2, weights, spatial_group)
+            acc = {k: torch.zeros(pred.shape[1], device=pred.device) for k in keys}
+        acc["model"] += reduce_spatial_mean((pred - y) ** 2, weights, spatial_group)
+        if baselines:
+            persist = persistence_prediction(x, n_in_timesteps, y.shape[1])
+            acc["persistence"] += reduce_spatial_mean((persist - y) ** 2, weights, spatial_group)
+            acc["climatology"] += reduce_spatial_mean((clim.unsqueeze(0) - y) ** 2, weights, spatial_group)
         n_batches += 1
 
-    local_rmse = torch.sqrt(sq_acc / max(1, n_batches))     # per local channel
-    global_rmse = gather_channels(local_rmse, channel_group)  # all variables
     names = build_ordered_variables(levels_full)
-
-    if data_std is not None:
-        global_rmse = global_rmse * torch.as_tensor(data_std, device=global_rmse.device)
-
-    if subset_levels is not None:
-        idx = subset_indices(levels_full, subset_levels).to(global_rmse.device)
-        global_rmse = global_rmse[idx]
+    idx = (subset_indices(levels_full, subset_levels) if subset_levels is not None
+           else None)
+    result = {}
+    for k in keys:
+        rmse = gather_channels(torch.sqrt(acc[k] / max(1, n_batches)), channel_group)
+        if data_std is not None:
+            rmse = rmse * torch.as_tensor(data_std, device=rmse.device)
+        if idx is not None:
+            rmse = rmse[idx.to(rmse.device)]
+        result[k] = rmse
+    if idx is not None:
         names = [names[i] for i in idx.tolist()]
-    return names, global_rmse
+    return names, result
+
+
+def validate_per_level(model, dataloader, levels_full, groups, device,
+                       subset_levels=None, data_std=None) -> tuple[list[str], torch.Tensor]:
+    """Back-compat wrapper: model-only per-variable RMSE (no baselines)."""
+    names, result = evaluate_all(
+        model, dataloader, levels_full, groups, device,
+        baselines=False, subset_levels=subset_levels, data_std=data_std)
+    return names, result["model"]
+
+
+def write_metrics_csv(path: str, epoch: int, names: list[str], metrics: dict) -> None:
+    """Append one row per variable to a long-format CSV (call on rank 0 only).
+
+    Columns: epoch, variable, <metric_1>, <metric_2>, ... — easy to load with
+    pandas and pivot for the per-level curves / improvement heatmaps.
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    new = not os.path.exists(path)
+    keys = list(metrics.keys())
+    with open(path, "a", newline="") as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(["epoch", "variable", *keys])
+        for i, name in enumerate(names):
+            w.writerow([epoch, name, *[f"{metrics[k][i].item():.6f}" for k in keys]])
+
+
+@torch.no_grad()
+def dump_sample_maps(model, dataloader, levels_full, groups, device,
+                     var_names: list[str], out_dir: str) -> None:
+    """Save full (lat, lon) prediction/truth/error maps for a few variables.
+
+    Runs one forward on the first validation batch, then for each requested
+    variable: finds which JChannel rank owns that channel, gathers its
+    (lat, lon_local) field into the full grid over JSpatial, and writes
+    ``<var>_{pred,true,err}.npy`` (from the JSpatial-rank-0 of the owning channel
+    shard). Feed these to matplotlib offline for the poster maps.
+    """
+    channel_group, spatial_group = groups["JChannel"], groups["JSpatial"]
+    full_names = build_ordered_variables(levels_full)
+
+    model.eval()
+    batch = next(iter(dataloader))
+    x, y = batch[0].to(device), batch[1].to(device)
+    pred = model(x)
+    chunk = pred.shape[1]  # local channel count
+
+    for vname in var_names:
+        if vname not in full_names:
+            continue
+        g = full_names.index(vname)
+        owner, local = g // chunk, g % chunk
+        if channel_group.rank() != owner:
+            continue
+        full_pred = gather_spatial_field(pred[0, local], spatial_group)  # (lat, lon)
+        full_true = gather_spatial_field(y[0, local], spatial_group)
+        if dist.get_world_size(spatial_group) <= 1 or spatial_group.rank() == 0:
+            os.makedirs(out_dir, exist_ok=True)
+            p, t = full_pred.float().cpu().numpy(), full_true.float().cpu().numpy()
+            np.save(os.path.join(out_dir, f"{vname}_pred.npy"), p)
+            np.save(os.path.join(out_dir, f"{vname}_true.npy"), t)
+            np.save(os.path.join(out_dir, f"{vname}_err.npy"), p - t)

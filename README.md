@@ -102,6 +102,19 @@ python -m era5_levels.main --config configs/base_0p25.yaml \
     --overlay configs/levels37.yaml --dry-run
 ```
 
+## Outputs (for the poster)
+
+Each validation pass (rank 0) writes to the run's results dir:
+
+- **`metrics.csv`** — long-format `epoch, variable, model, persistence,
+  climatology` (latitude-weighted RMSE per variable-at-level). Load with pandas
+  and pivot for the per-level curves and the 13-vs-37 improvement heatmap; the
+  **persistence** and (self-computed, in-sample) **climatology** columns give the
+  baselines that make those plots meaningful.
+- **`maps/epoch_<n>/<var>_{pred,true,err}.npy`** — full `(lat, lon)` fields for
+  the variables listed in `training.dump_maps_vars`, for the forecast/error map
+  figures. Gathered over `JSpatial`; nothing is gathered across channels.
+
 ## Configuration notes
 
 - **Channels are derived, never set by hand.** `config.py` computes
