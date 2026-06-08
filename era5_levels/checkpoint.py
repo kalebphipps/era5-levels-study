@@ -1,0 +1,111 @@
+"""Vendored sharded-checkpoint save/resume.
+
+The beast model refactor removed ``save_checkpoint`` / ``load_latest_model_states``
+/ ``load_state_dict`` from ``beast.utils`` (they now live only in the unmerged
+checkpoint PR, as ``beast.checkpoint``). To avoid taking a dependency on another
+in-flight PR, we vendor a minimal, self-contained version here, modelled on the
+original beast implementation.
+
+Sharding model: each domain-parallel rank owns a slice of the model, so the
+checkpoint is *per shard*. Files are named with the Expert and JChannel ranks,
+and on load each rank picks up the latest file matching its own (ep, jc) ranks.
+Only the DDP-rank-0 of each shard writes, to avoid duplicate writes across data-
+parallel replicas.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+
+import torch
+
+from . import beast_api
+
+_CKPT_RE = re.compile(r"cp-epoch(\d+)(?:-step(\d+))?-e(\d+)-jc(\d+)\.pt$")
+
+
+def save_checkpoint(checkpoint_path, model, optimizer, epoch, step, loss) -> None:
+    """Write this shard's checkpoint (only DDP-rank 0 of the shard writes)."""
+    channel_group = beast_api.get_process_group("JChannel")
+    ep_group = beast_api.get_process_group("Expert")
+    ddp_rank = beast_api.get_process_group("DDP").rank()
+
+    if ddp_rank != 0:
+        return
+
+    loss_val = loss.item() if hasattr(loss, "item") else loss
+    cp = {
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "epoch": epoch,
+        "step": step,
+        "ep_group_rank": ep_group.rank(),
+        "channel_group_rank": channel_group.rank(),
+        "loss": loss_val,
+        "format": 1,
+    }
+    name = f"cp-epoch{epoch}-step{step}-e{ep_group.rank()}-jc{channel_group.rank()}"
+    os.makedirs(checkpoint_path, exist_ok=True)
+    torch.save(cp, os.path.join(checkpoint_path, f"{name}.pt"))
+
+
+def _load_one(path, map_location="cpu"):
+    cp = torch.load(path, map_location=map_location, weights_only=False)
+    return (
+        cp["model_state_dict"],
+        cp["optimizer_state_dict"],
+        cp["epoch"],
+        cp.get("step", None),
+        cp["ep_group_rank"],
+        cp["channel_group_rank"],
+        cp["loss"],
+    )
+
+
+def load_latest_model_states(directory):
+    """Return the latest checkpoint tuple for *this rank's* (ep, jc) shard.
+
+    ``directory`` is the run dir; checkpoints live in ``<directory>/checkpoints``.
+    Returns (model_sd, optim_sd, epoch, step, ep_rank, jc_rank, loss).
+    """
+    ckpt_dir = os.path.join(directory, "checkpoints")
+    ep_rank = beast_api.get_process_group("Expert").rank()
+    jc_rank = beast_api.get_process_group("JChannel").rank()
+
+    candidates = []
+    for fname in os.listdir(ckpt_dir):
+        m = _CKPT_RE.match(fname)
+        if not m:
+            continue
+        epoch = int(m.group(1))
+        step = int(m.group(2)) if m.group(2) else -1
+        e, jc = int(m.group(3)), int(m.group(4))
+        if e == ep_rank and jc == jc_rank:
+            candidates.append((epoch, step, fname))
+
+    if not candidates:
+        raise FileNotFoundError(
+            f"No checkpoint for ep={ep_rank}, jc={jc_rank} in {ckpt_dir}")
+
+    epoch, step, fname = max(candidates, key=lambda x: (x[0], x[1]))
+    return _load_one(os.path.join(ckpt_dir, fname))
+
+
+def load_state_dict(model, optimizer, model_state_dict, optimizer_state_dict, last_epoch):
+    """Load weights+optimizer into the (DDP-wrapped) model; return start_epoch.
+
+    Best-effort: if the shapes don't match (e.g. a config changed), fall back to
+    a fresh start rather than crashing.
+    """
+    try:
+        model.load_state_dict(model_state_dict)
+        optimizer.load_state_dict(optimizer_state_dict)
+        start_epoch = last_epoch + 1
+    except Exception as err:  # noqa: BLE001 - resume is best-effort
+        import torch.distributed as dist
+
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            print(f"[resume] state_dict load failed ({err}); starting fresh")
+        start_epoch = 0
+    return model, optimizer, start_epoch

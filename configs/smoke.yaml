@@ -23,6 +23,7 @@ data:
     xlat: 120
     xlon: 240
     n_in_timesteps: 1
+    n_out_timesteps: 1
     pressure_levels: [1000, 850, 500, 250, 50]     # any subset is fine for a smoke test
 
 model:

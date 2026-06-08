@@ -34,14 +34,21 @@ def _imp(module_suffix: str):
 
 
 # --- model / wrappers --------------------------------------------------------
-def get_model_classes():
-    m = _imp("model.model_gb")
-    t = _imp("model.model_gb_tiny")
-    return m.Bellbeast, t.TinyBellbeast
+def get_model_class():
+    """Return the unified ``Beast`` model class.
+
+    The old ``Bellbeast`` / ``TinyBellbeast`` split is gone after the model
+    refactor — a single ``beast.model.Beast`` now handles both the single-GPU and
+    domain-parallel cases (process groups of size 1 vs >1). Built via its keyword
+    -only constructor in train.build_model (a config-driven factory
+    ``beast.model.get_model`` also exists if you'd rather use named presets).
+    """
+    return _imp("model").Beast
 
 
 def get_expert_class():
-    return _imp("model.expert").Expert
+    # Relocated by the refactor: beast.model.expert -> beast.layers.expert.
+    return _imp("layers.expert").Expert
 
 
 # --- distributed comm --------------------------------------------------------

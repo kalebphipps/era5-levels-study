@@ -51,7 +51,8 @@ compare — you don't need convergence, you need parity.
 era5_levels/
   variable_layout.py   # vendored: the 13/37 channel-order source of truth (stdlib only)
   config.py            # load YAML + derive channel counts from pressure_levels
-  beast_api.py         # the ONLY place that imports beast (beast→gb fallback, dist bootstrap)
+  beast_api.py         # the ONLY place that imports beast (beast→gb fallback, dist bootstrap, model/Expert relocations)
+  checkpoint.py        # vendored sharded save/resume (the beast checkpoint fns moved to an unmerged PR)
   losses.py            # latitude-weighted MSE (deterministic loss)
   train.py             # deterministic training loop (adapted from BellBeast, beast APIs)
   evaluate.py          # DISTRIBUTED per-variable RMSE (shard-local + JSpatial/JChannel reductions) + subset indexing

@@ -24,37 +24,49 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
-from . import beast_api
+from . import beast_api, checkpoint
 from .evaluate import dump_sample_maps, evaluate_all, write_metrics_csv
 from .losses import LatitudeWeightedMSE
 from .transfer import freeze_core, load_core_from_checkpoint
 
 
 def build_model(cfg, device, dtype, groups):
-    Bellbeast, TinyBellbeast = beast_api.get_model_classes()
+    """Build the (deterministic) Beast model from the study config.
+
+    Post-refactor there is a single ``Beast`` class (no Tiny/Grand split) with a
+    keyword-only constructor. Only ``patch_embedding``/``patch_recovery`` depend
+    on the channel count, so keeping every arg below identical across the 13- and
+    37-level runs (only ``in/out_channels`` differ) is what keeps the comparison
+    fair. Note the ctor uses ``height``/``width`` (not xlat/xlon), takes explicit
+    ``stride``/``padding``/``dilation``, and no longer takes ``ep_group`` /
+    ``parallelism`` / ``flash_attn`` (the Expert wrapper handles ep_group).
+    """
+    Beast = beast_api.get_model_class()
     m, mdl = cfg["model"], cfg["data"]
-    common = dict(
-        xlat=mdl["xlat"], xlon=mdl["xlon"],
-        in_channels=m["n_input_channels"], embed_dim=m["embedding_dimension"],
-        out_channels=m["n_output_channels"], heads=m["n_attn_heads"],
-        kernel_size=m["patch_size"], window_size_outer=m["window_size_outer"],
-        window_size_inner=m["window_size_inner"], n_full_blocks=m["n_attn_blocks"],
-        noise_dim=m["noise_dim"], device=device, bayesian=False, dtype=dtype,
+    model = Beast(
+        height=mdl["xlat"],
+        width=mdl["xlon"],
+        in_channels=m["n_input_channels"],
+        out_channels=m["n_output_channels"],
+        embed_dim=m["embedding_dimension"],
+        heads=m["n_attn_heads"],
+        kernel_size=m["patch_size"],
+        stride=m["patch_size"],
+        padding=0,
+        dilation=1,
+        window_size_outer=m["window_size_outer"],
+        window_size_inner=m["window_size_inner"],
+        n_full_blocks=m["n_attn_blocks"],
+        noise_dim=m["noise_dim"],
+        device=device,
+        dtype=dtype,
+        bayesian=False,
+        nice_norm=m["nice_norm"],
+        channel_group=groups["JChannel"],
+        spatial_group=groups["JSpatial"],
+        dtp_group=groups["DTP"],
+        up_group=groups["SP"],
     )
-    if mdl["xlat"] == 120 and mdl["xlon"] == 240:
-        model = TinyBellbeast(
-            channel_group=groups["JChannel"], ep_group=groups["Expert"],
-            up_group=groups["SP"], **common,
-        )
-    else:
-        model = Bellbeast(
-            dtp_rank=groups["DTP"].rank(), dtp_group=groups["DTP"],
-            spatial_group=groups["JSpatial"], channel_group=groups["JChannel"],
-            ep_group=groups["Expert"], up_group=groups["SP"],
-            parallelism=cfg["jigsaw"]["parallelism"],
-            flash_attn=cfg["training"]["flash_attn"], nice_norm=m["nice_norm"],
-            **common,
-        )
     return model.to(dtype).to(device)
 
 
@@ -146,8 +158,8 @@ def training_loop(cfg):
         f.endswith(".pt") for f in os.listdir(ckpt_path))
     if has_ckpt:
         try:
-            msd, osd, last_epoch, *_ = utils.load_latest_model_states(results_path)
-            model, optimizer, start_epoch = utils.load_state_dict(
+            msd, osd, last_epoch, *_ = checkpoint.load_latest_model_states(results_path)
+            model, optimizer, start_epoch = checkpoint.load_state_dict(
                 model, optimizer, msd, osd, last_epoch)
             if is_root:
                 print(f"[resume] loaded epoch {last_epoch} -> starting at {start_epoch}")
@@ -160,11 +172,11 @@ def training_loop(cfg):
             scheduler.step(epoch)
         t0 = time.perf_counter()
         avg = train_one_epoch(cfg, epoch, train_dl, model, optimizer, loss_fn,
-                              sqrt_w, device, groups["DTP"], ckpt_path, utils)
+                              sqrt_w, device, groups["DTP"], ckpt_path)
         if is_root:
             print(f"epoch {epoch}: train weighted-MSE {avg:.5f} "
                   f"({(time.perf_counter() - t0) / 60:.1f} min)")
-        utils.save_checkpoint(ckpt_path, model, optimizer, epoch, 0, avg)
+        checkpoint.save_checkpoint(ckpt_path, model, optimizer, epoch, 0, avg)
 
         if valid_dl is not None:
             vloss = validate(valid_dl, model, loss_fn, sqrt_w, device, groups["DTP"])
@@ -193,7 +205,7 @@ def training_loop(cfg):
 
 
 def train_one_epoch(cfg, epoch, dl, model, optimizer, loss_fn, sqrt_w, device,
-                    dtp_group, ckpt_path, utils):
+                    dtp_group, ckpt_path):
     model.train()
     autocast = cfg["training"]["autocast"]
     ckpt_every = cfg["training"]["checkpoint_interval"]
@@ -212,7 +224,7 @@ def train_one_epoch(cfg, epoch, dl, model, optimizer, loss_fn, sqrt_w, device,
         optimizer.step()
         loss_sum += loss.detach()
         if ckpt_every and i % ckpt_every == 0:
-            utils.save_checkpoint(ckpt_path, model, optimizer, epoch, i, loss_sum)
+            checkpoint.save_checkpoint(ckpt_path, model, optimizer, epoch, i, loss_sum)
         if i % 50 == 0 and dist.get_rank() == 0:
             print(f"  epoch {epoch} step {i}/{len(dl)} loss {float(loss):.5f}")
 
