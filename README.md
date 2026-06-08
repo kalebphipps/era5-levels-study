@@ -65,9 +65,11 @@ configs/
 slurm/
   setup_env.sh         # venv on a workspace + pip install -e beast + this repo
   submit_smoke.sh      # 1-GPU end-to-end smoke job
-  submit_train.sh      # multi-GPU training (HoreKa TEAL/Ruby)
+  submit_train.sh      # multi-GPU training (HoreKa TEAL/Ruby), stable RUN_DIR + auto-resume
+  submit_chain.sh      # chain of afterany jobs sharing RUN_DIR — survives time-limit kills
 scripts/
   run_subset_eval.py   # free 37→13 comparison — distributed entrypoint (+ --check-indices)
+  plot_results.py      # offline poster figures from metrics.csv + map dumps (laptop, no beast)
 ```
 
 ## Setup & run (HoreKa)
@@ -81,16 +83,27 @@ bash slurm/setup_env.sh
 # 1. prove the pipeline runs end-to-end (random dummy data, tiny model)
 sbatch slurm/submit_smoke.sh
 
-# 2. train the matched pair (edit data paths in the overlays + partition/nodes first)
+# 2. train the matched pair (edit data paths in the overlays + partition/nodes first).
+#    Use submit_chain.sh for long runs: each link auto-resumes from the shared
+#    RUN_DIR, so SLURM time-limit kills don't cost progress. The two chains run
+#    in parallel (independent jobs).
 export DATA_DIR=/path/to/zarr_root ; export WORKDIR=$(pwd)
-sbatch slurm/submit_train.sh configs/base_0p25.yaml configs/levels13.yaml
-sbatch slurm/submit_train.sh configs/base_0p25.yaml configs/levels37.yaml
+bash slurm/submit_chain.sh configs/base_0p25.yaml configs/levels13.yaml 4
+bash slurm/submit_chain.sh configs/base_0p25.yaml configs/levels37.yaml 4
+# (or a single job each: sbatch slurm/submit_train.sh configs/base_0p25.yaml configs/levels13.yaml)
 
 # 3. headline comparison (DISTRIBUTED, same mesh as training, after both finish)
 python scripts/run_subset_eval.py --check-indices    # pure-python channel-index sanity
 srun python -u scripts/run_subset_eval.py \
     --config configs/base_0p25.yaml --overlay configs/levels37.yaml \
-    --results-dir $WS/results/<partition>/<jobid>
+    --results-dir $WS/results/levels37
+
+# 4. poster figures (offline, on your laptop — no beast/GPU)
+pip install -e ".[plots]"
+python scripts/plot_results.py \
+    --csv13 $WS/results/levels13/metrics.csv \
+    --csv37 $WS/results/levels37/metrics.csv \
+    --maps-dir $WS/results/levels37/maps/epoch_0 --out figures/
 ```
 
 The only config difference between the two runs is the overlay

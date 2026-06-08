@@ -129,15 +129,33 @@ def training_loop(cfg):
     loss_fn = LatitudeWeightedMSE()
     sqrt_w = torch.sqrt(utils.get_spatial_weights(cfg, device))
 
-    results_path = os.path.join(
+    results_path = cfg.get("run_dir") or os.path.join(
         os.environ.get("OUTPUT_DIR", "./results"),
         os.environ.get("SLURM_JOB_PARTITION", "local"),
         os.environ.get("SLURM_JOB_ID", "interactive"))
     ckpt_path = os.path.join(results_path, "checkpoints")
     if is_root:
         os.makedirs(ckpt_path, exist_ok=True)
+    dist.barrier()
 
-    for epoch in range(cfg["training"]["n_epochs"]):
+    # Auto-resume: if this run dir already holds checkpoints (e.g. a chained job
+    # restarting after a SLURM time-limit kill), reload the latest shard for this
+    # rank and continue. Fresh runs (empty dir) just start at epoch 0.
+    start_epoch = 0
+    has_ckpt = os.path.isdir(ckpt_path) and any(
+        f.endswith(".pt") for f in os.listdir(ckpt_path))
+    if has_ckpt:
+        try:
+            msd, osd, last_epoch, *_ = utils.load_latest_model_states(results_path)
+            model, optimizer, start_epoch = utils.load_state_dict(
+                model, optimizer, msd, osd, last_epoch)
+            if is_root:
+                print(f"[resume] loaded epoch {last_epoch} -> starting at {start_epoch}")
+        except Exception as e:  # noqa: BLE001 - resume is best-effort
+            if is_root:
+                print(f"[resume] failed ({e}); starting fresh")
+
+    for epoch in range(start_epoch, cfg["training"]["n_epochs"]):
         if scheduler is not None:
             scheduler.step(epoch)
         t0 = time.perf_counter()

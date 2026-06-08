@@ -28,10 +28,17 @@ mkdir -p logs
 BASE_CONFIG="${1:?pass a base config, e.g. configs/base_0p25.yaml}"
 OVERLAY="${2:?pass a levels overlay, e.g. configs/levels37.yaml}"
 
-# Outputs (training_loop writes to OUTPUT_DIR/<partition>/<jobid>/...)
+# Outputs. RUN_DIR is a STABLE per-experiment dir (checkpoints + metrics.csv).
+# Reusing it auto-resumes from the latest checkpoint — that's how chained jobs
+# survive time-limit kills (see submit_chain.sh). Default is derived from the
+# overlay name so levels13 / levels37 don't collide; export RUN_DIR yourself to
+# override or to start a clean experiment.
 export OUTPUT_DIR="$WS/results"
 export PROFILE_DIR="$WS/results/profiles"
 export DATA_DIR WORKDIR
+export RUN_DIR="${RUN_DIR:-$WS/results/$(basename "$OVERLAY" .yaml)}"
+mkdir -p "$RUN_DIR"
+echo "RUN_DIR=$RUN_DIR (auto-resumes if checkpoints already exist there)"
 
 # torch.distributed rendezvous
 export MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n1)
@@ -47,4 +54,5 @@ export PYTHONPYCACHEPREFIX=${TMPDIR}/pycache
 srun -N "$SLURM_NNODES" --ntasks-per-node 1 bash -c 'mkdir -p ${PYTHONPYCACHEPREFIX}'
 
 echo "Training: base=$BASE_CONFIG overlay=$OVERLAY  on $SLURM_NTASKS GPUs"
-srun python -u -m era5_levels.main --config "$BASE_CONFIG" --overlay "$OVERLAY"
+srun python -u -m era5_levels.main \
+    --config "$BASE_CONFIG" --overlay "$OVERLAY" --run-dir "$RUN_DIR"

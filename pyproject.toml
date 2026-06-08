@@ -20,6 +20,11 @@ dependencies = [
     "xarray",
 ]
 
+[project.optional-dependencies]
+# Offline figure generation (scripts/plot_results.py) — install on your laptop:
+#   pip install -e ".[plots]"
+plots = ["matplotlib", "pandas"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["era5_levels"]
 
