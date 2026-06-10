@@ -6,12 +6,14 @@
 #   sbatch slurm/submit_train.sh configs/base_0p25.yaml configs/levels37.yaml
 #
 # IMPORTANT: NODES * GPUS_PER_NODE must equal the product of mesh_dims in the
-# config (base_0p25.yaml defaults to 8 GPUs -> e.g. 2 nodes x 4 GPUs).
+# config. base_0p25.yaml is now SINGLE-NODE: mesh [1,1,1,2,2] = 4 GPUs = 1 node.
+# (To scale to 8 later: set mesh [1,1,1,4,2] + parallelism 8 and --gres=gpu:8 on
+# an accelerated-h200-8 node, or --nodes=2 on a 4-GPU partition.)
 #
 #SBATCH --job-name=levels
-#SBATCH --partition=TODO_PARTITION      # <- set to the TEAL/Ruby H100/H200 partition (check `sinfo`)
-#SBATCH --nodes=2
-#SBATCH --ntasks-per-node=4             # = GPUs per node
+#SBATCH --partition=TODO_PARTITION      # <- e.g. accelerated-h200 or accelerated-h100
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=4             # = GPUs per node = product(mesh_dims)
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=16
 #SBATCH --time=08:00:00
