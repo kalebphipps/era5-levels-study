@@ -32,12 +32,13 @@ model:
     patch_size: 2                           # 720x1440 -> 360x720 latent
     n_attn_heads: [8, 16, 8]
     n_attn_blocks: [1, 1, 1]                # outer / inner / outer SWIN depths
-    # Windows below are the hero-proven divisible values for this exact grid +
-    # parallelism, so a first run is guaranteed to tile cleanly. They are LARGE
-    # (near-global attention) and are your main speed lever: shrink them once a
-    # run works, re-checking divisibility on the distributed (jigsaw) layout.
-    window_size_outer: [360, 180]
-    window_size_inner: [180, 30]
+    # Small, fast windows sized for the single-node (parallelism 4) layout:
+    # global latent is 360x720, halved to 180x360 in the inner stage. [12,24]
+    # divides both (and the per-rank longitude shard 360), keeping attention
+    # cheap. If jigsaw rejects them on the first real run, this is the line to
+    # adjust (the distributed-smoke validates exactly this).
+    window_size_outer: [12, 24]
+    window_size_inner: [12, 24]
     noise_dim: 32                           # unused when nice_norm: False; kept for ctor
     nice_norm: False                        # deterministic — no NICE noise conditioning
     latent_rollout: 1
@@ -63,13 +64,15 @@ training:
     # dump_maps_vars: ["geopotential_500", "2m_temperature", "temperature_850"]
 
 jigsaw:
-    parallelism: 8                          # = jspatial * jchannel (must match mesh_dims)
+    parallelism: 4                          # = jspatial * jchannel (must match mesh_dims)
     type: jigsaw
 
 # experts, dp, up(sample), jigsaw-spatial, jigsaw-channel  -> product = #GPUs.
-# [1,1,1,4,2] = 8 GPUs. experts=1 -> universal expert (no hardcoded level slicing);
-# up=1 -> deterministic (no sample parallelism).
-mesh_dims: [1, 1, 1, 4, 2]
+# [1,1,1,2,2] = 4 GPUs = ONE node (simplest; no multi-node NCCL). 2-way channel
+# split x 2-way longitude split. experts=1 -> universal expert (no hardcoded
+# level slicing); up=1 -> deterministic (no sample parallelism). To scale to a
+# full node of 8 (e.g. accelerated-h200-8) later: [1,1,1,4,2] + parallelism 8.
+mesh_dims: [1, 1, 1, 2, 2]
 
 # Optional frozen-core transfer (leave commented for normal runs):
 # transfer:

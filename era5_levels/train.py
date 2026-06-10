@@ -226,7 +226,7 @@ def train_one_epoch(cfg, epoch, dl, model, optimizer, loss_fn, sqrt_w, device,
         if ckpt_every and i % ckpt_every == 0:
             checkpoint.save_checkpoint(ckpt_path, model, optimizer, epoch, i, loss_sum)
         if i % 50 == 0 and dist.get_rank() == 0:
-            print(f"  epoch {epoch} step {i}/{len(dl)} loss {float(loss):.5f}")
+            print(f"  epoch {epoch} step {i}/{len(dl)} loss {loss.item():.5f}")
 
     dist.all_reduce(loss_sum, group=dtp_group)
     return loss_sum.item() / max(1, len(dl)) / dist.get_world_size(dtp_group)

@@ -1,0 +1,65 @@
+# 4-GPU DISTRIBUTED smoke test (one dev node, dummy data).
+#
+# Validates the part the single-GPU smoke can't: the distributed model path
+# (_build_dist_model + jigsaw channel/longitude sharding), DDP across the mesh,
+# and window divisibility on the *real* 720x1440 grid — all on random data, so
+# no real zarr is needed yet. Uses the same grid + windows + mesh as
+# base_0p25.yaml, just a tiny model so it runs in seconds.
+#
+#   salloc --partition=dev_accelerated --gres=gpu:4 --ntasks=4 --time=00:30:00
+#   source $WS/venv/bin/activate; cd $STUDY
+#   export MASTER_ADDR=127.0.0.1 MASTER_PORT=29500 OUTPUT_DIR=$WS/results
+#   srun python -u -m era5_levels.main --config configs/smoke_dist.yaml
+
+data:
+    dt: 6
+    train_data_path: "DUMMY_does_not_exist.zarr"   # -> random dummy data
+    valid_data_path: "DUMMY_does_not_exist.zarr"
+    constant_masks_path: "constant_masks"
+    constant_masks: []
+    normalization_dir: "DUMMY"
+    train_time_range: ["2019-01-01", "2019-01-05"]
+    valid_time_range: ["2019-01-06", "2019-01-07"]
+    train_subset: -1
+    valid_subset: -1
+    dataset_subsampling: 1
+    target_subsampling: 6
+    prefetch_factor: 2
+    num_workers: 2
+    xlat: 720
+    xlon: 1440
+    n_in_timesteps: 1
+    n_out_timesteps: 1
+    pressure_levels: [1000, 850, 500, 250, 50]     # -> 36 channels (even; splits 18/18)
+
+model:
+    embedding_dimension: 64                         # tiny — this is a plumbing test
+    patch_size: 2                                   # 720x1440 -> 360x720 latent
+    n_attn_heads: [2, 4, 2]
+    n_attn_blocks: [1, 1, 1]
+    window_size_outer: [12, 24]                     # same as base_0p25 (the real grid)
+    window_size_inner: [12, 24]
+    noise_dim: 8
+    nice_norm: False
+    latent_rollout: 1
+    bayesian: False
+
+training:
+    tf32: True
+    n_samples: 1
+    n_epochs: 1
+    batch_size: 1
+    lr_scheduler: False
+    low_lr: 0.0001
+    normal_lr: 0.0001
+    dtype: float32
+    autocast: True
+    timings: False
+    checkpoint_interval: 100000
+    flash_attn: True
+
+jigsaw:
+    parallelism: 4                                  # = jspatial * jchannel
+    type: jigsaw
+
+mesh_dims: [1, 1, 1, 2, 2]                          # 4 GPUs = one node

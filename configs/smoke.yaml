@@ -19,7 +19,7 @@ data:
     dataset_subsampling: 1
     target_subsampling: 6
     prefetch_factor: 2
-    num_workers: 0
+    num_workers: 2          # >0 required when prefetch_factor is set
     xlat: 120
     xlon: 240
     n_in_timesteps: 1
