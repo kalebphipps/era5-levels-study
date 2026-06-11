@@ -1,0 +1,21 @@
+# Single-node 8-GPU scaling overlay (e.g. accelerated-h200-8). Stack on
+# base_0p25 + a levels overlay. 8 GPUs = jspatial 4 x jchannel 2 = the MAX
+# domain parallelism the dataset supports, and it's still ONE node -> no
+# multi-node NCCL. Windows recomputed for jspatial=4 (width=1440, patch=2):
+#   window_outer[1] must divide 1440/(jspatial*patch)   = 180   (12 -> 15)
+#   window_inner[1] must divide 1440/(jspatial*2*patch) =  90   ( 6 -> 15)
+#
+#   srun python -u -m era5_levels.main --config configs/base_0p25.yaml \
+#       --overlay configs/levels37.yaml --overlay configs/scale8.yaml
+#
+# NB: re-run the dummy distributed smoke with this overlay on an 8-GPU node
+# before the real run (jspatial/windows differ from the 4-GPU smoke).
+
+model:
+    window_size_outer: [12, 12]
+    window_size_inner: [12, 6]
+
+jigsaw:
+    parallelism: 8
+
+mesh_dims: [1, 1, 1, 4, 2]
