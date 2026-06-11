@@ -35,13 +35,15 @@ OUT="${OUT:?Set OUT=/path/to/era5_37level_1p5.zarr}"
 START="${START:-1990-01-01}"
 END="${END:-2022-12-31}"
 STRIDE="${STRIDE:-6}"                 # 6 = every 6th hour IF source is hourly; 1 if already 6-hourly
+BLOCK="${BLOCK:-48}"                  # checkpoint granularity (timesteps per append)
 
 # sanity: confirm the input is actually visible from this node before the long run
 ls -d "$IN" >/dev/null || { echo "ERROR: cannot see input $IN from this node"; exit 1; }
 
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-32}"
-echo "coarsen $IN -> $OUT  range=[$START,$END] stride=$STRIDE cpus=$OMP_NUM_THREADS"
+echo "coarsen $IN -> $OUT  range=[$START,$END] stride=$STRIDE block=$BLOCK cpus=$OMP_NUM_THREADS"
+# Resumable: re-running continues from however many timesteps are already in OUT.
 python -u scripts/coarsen_to_1p5.py \
     --in "$IN" --out "$OUT" \
-    --factor 6 --time-range "$START" "$END" --time-stride "$STRIDE"
+    --factor 6 --time-range "$START" "$END" --time-stride "$STRIDE" --block "$BLOCK"
 echo "done."

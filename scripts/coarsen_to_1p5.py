@@ -1,30 +1,33 @@
 """Coarsen a 0.25-degree stacked ERA5 zarr to ~1.5 degrees (factor-6 block mean).
 
+RESUMABLE + chainable: writes the output in time-blocks, appending each block.
+If the job dies, just re-run with the SAME arguments — it reads how many
+timesteps are already in the output and continues from there. So you can chain
+it with afterany jobs (slurm/submit_coarsen_chain.sh) until it finishes.
+
 WeatherBench-2's ready-made 1.5deg ERA5 has only 13 pressure levels, so to get
-1.5deg WITH the full 37 levels we coarsen YOUR existing 0.25deg 37-level zarr.
-Bonus: 1.5deg and 0.25deg then share identical source data, so the
-resolution comparison is clean. The (time, feature, lat, lon) layout and the
-228-channel feature order are preserved exactly.
+1.5deg WITH the full 37 levels we coarsen YOUR 0.25deg 37-level zarr. The
+(time, feature, lat, lon) layout and the 228-channel feature order are preserved
+exactly, and 0.25deg + 1.5deg then share identical source data.
 
-    python scripts/coarsen_to_1p5.py \
-        --in  /path/era5_37level_0p25.zarr \
-        --out $WS/data/era5_37level_1p5.zarr \
-        --factor 6 --time-range 2010-01-01 2021-12-31
+    python scripts/coarsen_to_1p5.py --in IN.zarr --out OUT.zarr \
+        --factor 6 --time-range 1990-01-01 2022-12-31 --time-stride 6
 
-0.25deg (721x1440) --factor 6--> 120x240 (~1.5deg). boundary="trim" drops the
-trailing odd latitude (721) which the dataset would clip anyway.
+0.25deg (721x1440) --factor 6 + boundary="trim"--> 120x240 (the trailing odd
+latitude is dropped, which the dataset would clip anyway). Coarsen the constant
+masks the SAME way with scripts/coarsen_masks.py so they share this 120x240 grid.
 
 Notes
 -----
-- This streams via dask; on a big multi-decade store it is I/O heavy. Restrict
-  --time-range (e.g. ~10 years train + 1-2 valid) to keep it fast for the poster.
-- sea_surface_temperature was stored with land = 0 in the stacked data, so the
-  block mean slightly biases coastal SST. Fine for a poster; flag if you care.
-- Recompute normalization on the OUTPUT (era5_levels.data.calculate_normalization
-  / your norm script) — coarsening changes the per-feature std.
+- Streams via dask; reading the 0.25deg input is the cost (~0.95 GB/timestep).
+  Use --time-stride 6 on hourly data (-> 6-hourly, matches dt=6 training).
+- Recompute normalization on the OUTPUT (coarsening shrinks per-feature std).
+- sea_surface_temperature was stored with land=0, so its block mean is slightly
+  biased near coasts. Fine for a poster.
 """
 
 import argparse
+import os
 
 import xarray as xr
 
@@ -39,9 +42,10 @@ def main():
     ap.add_argument("--var", default="fields")
     ap.add_argument("--time-range", nargs=2, metavar=("START", "END"), default=None)
     ap.add_argument("--time-stride", type=int, default=1,
-                    help="keep every Nth timestep. If the source is HOURLY, use 6 "
-                         "to get 6-hourly data (matches dt=6 training) and cut "
-                         "reads ~6x. Use 1 if the source is already 6-hourly.")
+                    help="keep every Nth timestep. Hourly source -> 6 gives 6-hourly "
+                         "(matches dt=6) and cuts reads ~6x. Use 1 if already 6-hourly.")
+    ap.add_argument("--block", type=int, default=48,
+                    help="timesteps written per append = checkpoint granularity")
     args = ap.parse_args()
 
     ds = xr.open_zarr(args.inp)
@@ -49,20 +53,44 @@ def main():
         ds = ds.sel(time=slice(args.time_range[0], args.time_range[1]))
     if args.time_stride > 1:
         ds = ds.isel(time=slice(None, None, args.time_stride))
-    print(f"input:  {dict(ds.sizes)}")
+    n_total = ds.sizes["time"]
+    print(f"input selection: {dict(ds.sizes)}  ({n_total} timesteps)", flush=True)
 
-    ds_c = ds.coarsen(
-        {args.lat: args.factor, args.lon: args.factor}, boundary="trim"
-    ).mean()
+    # coarse dims (lazy metadata only)
+    meta = ds.isel(time=slice(0, 1)).coarsen(
+        {args.lat: args.factor, args.lon: args.factor}, boundary="trim").mean()
+    nfeat = meta.sizes["feature"]
+    nlat, nlon = meta.sizes[args.lat], meta.sizes[args.lon]
 
-    nfeat = ds_c.sizes["feature"]
-    nlat = ds_c.sizes[args.lat]
-    nlon = ds_c.sizes[args.lon]
-    ds_c = ds_c.chunk({"time": 1, "feature": nfeat, args.lat: nlat, args.lon: nlon})
+    # how many timesteps already written? -> resume point
+    done = 0
+    if os.path.exists(args.out):
+        try:
+            done = xr.open_zarr(args.out).sizes["time"]
+        except Exception as e:  # noqa: BLE001
+            print(f"WARNING: could not read existing output ({e}); starting fresh")
+            done = 0
+    if done >= n_total:
+        print(f"already complete: {done}/{n_total} timesteps in {args.out}")
+        return
+    print(f"resuming from timestep {done}/{n_total} "
+          f"(output grid feature={nfeat} lat={nlat} lon={nlon})", flush=True)
 
     enc = {args.var: {"chunks": (1, nfeat, nlat, nlon)}}
-    ds_c.to_zarr(args.out, mode="w", consolidated=True, encoding=enc)
-    print(f"output: {dict(ds_c.sizes)} -> {args.out}")
+    first = done == 0
+    for start in range(done, n_total, args.block):
+        stop = min(start + args.block, n_total)
+        blk = ds.isel(time=slice(start, stop)).coarsen(
+            {args.lat: args.factor, args.lon: args.factor}, boundary="trim").mean()
+        blk = blk.chunk({"time": 1, "feature": nfeat, args.lat: nlat, args.lon: nlon})
+        if first:
+            blk.to_zarr(args.out, mode="w", consolidated=True, encoding=enc)
+            first = False
+        else:
+            blk.to_zarr(args.out, mode="a", append_dim="time", consolidated=True)
+        print(f"  wrote {stop}/{n_total}", flush=True)
+
+    print(f"output: ({n_total}, {nfeat}, {nlat}, {nlon}) -> {args.out}")
 
 
 if __name__ == "__main__":
