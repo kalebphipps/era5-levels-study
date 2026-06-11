@@ -38,11 +38,17 @@ def main():
     ap.add_argument("--lon", default="longitude")
     ap.add_argument("--var", default="fields")
     ap.add_argument("--time-range", nargs=2, metavar=("START", "END"), default=None)
+    ap.add_argument("--time-stride", type=int, default=1,
+                    help="keep every Nth timestep. If the source is HOURLY, use 6 "
+                         "to get 6-hourly data (matches dt=6 training) and cut "
+                         "reads ~6x. Use 1 if the source is already 6-hourly.")
     args = ap.parse_args()
 
     ds = xr.open_zarr(args.inp)
     if args.time_range:
         ds = ds.sel(time=slice(args.time_range[0], args.time_range[1]))
+    if args.time_stride > 1:
+        ds = ds.isel(time=slice(None, None, args.time_stride))
     print(f"input:  {dict(ds.sizes)}")
 
     ds_c = ds.coarsen(
