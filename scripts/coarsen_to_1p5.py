@@ -66,7 +66,10 @@ def main():
     done = 0
     if os.path.exists(args.out):
         try:
-            done = xr.open_zarr(args.out).sizes["time"]
+            # consolidated=False: read the store's true current state (a
+            # killed link may not have re-consolidated), and skip the slow
+            # consolidated-metadata fallback warning.
+            done = xr.open_zarr(args.out, consolidated=False).sizes["time"]
         except Exception as e:  # noqa: BLE001
             print(f"WARNING: could not read existing output ({e}); starting fresh")
             done = 0
