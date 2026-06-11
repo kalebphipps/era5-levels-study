@@ -1,0 +1,19 @@
+# Tiny REAL-DATA validation overlay. Stack it on base + a levels overlay to run
+# a handful of real batches on a dev node before committing to a full run. This
+# is the one thing the dummy smoke did NOT cover: real zarr loading, real
+# normalization (.npy), constant masks, and the real 84/228-channel shapes.
+#
+#   srun python -u -m era5_levels.main \
+#       --config configs/base_0p25.yaml \
+#       --overlay configs/levels37.yaml \
+#       --overlay configs/devtest.yaml
+#
+# Fill the real data paths in levels13.yaml / levels37.yaml first.
+
+data:
+    train_subset: 8        # only the first 8 samples — just proving data flows
+    valid_subset: 8
+
+training:
+    n_epochs: 1
+    checkpoint_interval: 100000   # don't bother checkpointing a throwaway test
