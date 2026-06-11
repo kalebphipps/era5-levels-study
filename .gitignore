@@ -10,3 +10,4 @@ results/
 *.nc
 *.npy
 *.npz
+.idea/
