@@ -55,7 +55,8 @@ training:
     low_lr: 0.00001                         # encoder/decoder conv LR
     normal_lr: 0.0001                       # core LR
     dtype: float32
-    autocast: True
+    autocast: False         # jigsaw's custom backward can't mix bf16/float32; run pure float32
+                            # (revisit for speed only if jigsaw's matmul backward is patched to cast)
     timings: False
     checkpoint_interval: 1000
     flash_attn: True

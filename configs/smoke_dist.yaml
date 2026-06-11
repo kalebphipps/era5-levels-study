@@ -53,7 +53,7 @@ training:
     low_lr: 0.0001
     normal_lr: 0.0001
     dtype: float32
-    autocast: True
+    autocast: False         # jigsaw's custom backward can't mix bf16/float32; run pure float32
     timings: False
     checkpoint_interval: 100000
     flash_attn: True
