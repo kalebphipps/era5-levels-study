@@ -34,7 +34,7 @@ IN="${IN:?Set IN=/path/to/era5_37level_0p25.zarr}"
 OUT="${OUT:?Set OUT=/path/to/era5_37level_1p5.zarr}"
 START="${START:-1990-01-01}"
 END="${END:-2022-12-31}"
-STRIDE="${STRIDE:-6}"                 # 6 = every 6th hour IF source is hourly; 1 if already 6-hourly
+STRIDE="${STRIDE:-1}"                 # 1 = keep every timestep (HOURLY). Only set >1 to deliberately subsample.
 BLOCK="${BLOCK:-48}"                  # checkpoint granularity (timesteps per append)
 
 # sanity: confirm the input is actually visible from this node before the long run
