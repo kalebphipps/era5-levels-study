@@ -83,11 +83,18 @@ def main():
         blk = ds.isel(time=slice(start, stop)).coarsen(
             {args.lat: args.factor, args.lon: args.factor}, boundary="trim").mean()
         blk = blk.chunk({"time": 1, "feature": nfeat, args.lat: nlat, args.lon: nlon})
+        # Drop encoding inherited from the source: it carries stale chunk shapes
+        # (the 0.25deg grid) and a numcodecs Blosc compressor that zarr-python 3.x
+        # refuses to write into a v3 array. We write zarr v2 (matching the source)
+        # with fresh chunking -- same approach as era5_parallel_processing.
+        for name in blk.variables:
+            blk[name].encoding.clear()
         if first:
-            blk.to_zarr(args.out, mode="w", consolidated=True, encoding=enc)
+            blk.to_zarr(args.out, mode="w", zarr_format=2, consolidated=True, encoding=enc)
             first = False
         else:
-            blk.to_zarr(args.out, mode="a", append_dim="time", consolidated=True)
+            blk.to_zarr(args.out, mode="a", append_dim="time", zarr_format=2,
+                        consolidated=True)
         print(f"  wrote {stop}/{n_total}", flush=True)
 
     print(f"output: ({n_total}, {nfeat}, {nlat}, {nlon}) -> {args.out}")
