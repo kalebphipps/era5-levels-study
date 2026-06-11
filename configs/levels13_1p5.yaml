@@ -1,0 +1,7 @@
+# 13-level overlay for the 1.5deg study. Apply on top of base_1p5.yaml.
+# n_variables = 6 surface + 6 pressure * 13 = 84 (derived).
+data:
+    pressure_levels: [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
+    train_data_path: "era5_13level_1p5.zarr"     # 13-level subset (make_level_subset.py)
+    valid_data_path: "era5_13level_1p5.zarr"
+    normalization_dir: "data/normalization_1p5_13"   # 13-level subset norm (make_level_subset.py)
