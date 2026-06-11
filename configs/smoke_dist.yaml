@@ -38,7 +38,7 @@ model:
     n_attn_heads: [2, 4, 2]
     n_attn_blocks: [1, 1, 1]
     window_size_outer: [12, 24]                     # same as base_0p25 (the real grid)
-    window_size_inner: [12, 24]
+    window_size_inner: [12, 12]                      # inner[1] must divide 180 (see base_0p25)
     noise_dim: 8
     nice_norm: False
     latent_rollout: 1

@@ -32,13 +32,14 @@ model:
     patch_size: 2                           # 720x1440 -> 360x720 latent
     n_attn_heads: [8, 16, 8]
     n_attn_blocks: [1, 1, 1]                # outer / inner / outer SWIN depths
-    # Small, fast windows sized for the single-node (parallelism 4) layout:
-    # global latent is 360x720, halved to 180x360 in the inner stage. [12,24]
-    # divides both (and the per-rank longitude shard 360), keeping attention
-    # cheap. If jigsaw rejects them on the first real run, this is the line to
-    # adjust (the distributed-smoke validates exactly this).
+    # Windows for the single-node (parallelism 4, jspatial=2) layout. The model
+    # asserts these on the longitude (width=1440, patch_size=2):
+    #   window_outer[1] divides 1440/(jspatial*patch)   = 360   (24 -> 15 ✓)
+    #   window_inner[1] divides 1440/(jspatial*2*patch) = 180   (12 -> 15 ✓)
+    # window_*[0] (lat) just need to be even and divide the latent heights
+    # (360 then 180); 12 works. Validated by configs/smoke_dist.yaml.
     window_size_outer: [12, 24]
-    window_size_inner: [12, 24]
+    window_size_inner: [12, 12]
     noise_dim: 32                           # unused when nice_norm: False; kept for ctor
     nice_norm: False                        # deterministic — no NICE noise conditioning
     latent_rollout: 1
