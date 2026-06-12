@@ -19,7 +19,8 @@
 #SBATCH --time=08:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
-## #SBATCH --constraint=LSDF            # uncomment if data is on LSDF
+#SBATCH --constraint=LSDF              # needed for 0.25deg (data on /lsdf); harmless but
+                                       # unnecessary for 1.5deg (data on the workspace)
 
 set -euo pipefail
 module purge 2>/dev/null || true
