@@ -19,8 +19,8 @@ data:
     constant_masks_path: "/hkfs/work/workspace/scratch/xk5289-level_comparison/era5-levels-study/data/constant_masks_1p5"
     constant_masks: ["soil_type_normalized.npy", "topography_normalized.npy", "land_mask.npy"]
     normalization_dir: "PLACEHOLDER"
-    train_time_range: ["1979-01-01", "2021-12-31"]
-    valid_time_range: ["2022-01-01", "2022-12-31"]
+    train_time_range: ["2000-01-01", "2021-12-31"]   # 22 years (smallest acceptable window)
+    valid_time_range: ["2022-01-01", "2022-12-31"]   # held-out test year
     train_subset: -1
     valid_subset: -1
     dataset_subsampling: 1
@@ -52,7 +52,11 @@ model:
 training:
     tf32: True
     n_samples: 1
-    n_epochs: 20                             # 1.5deg trains fast; pick the SAME budget for 13 & 37
+    # 22yr hourly (~193k samples) is a BIG epoch -- 20 was unrealistic for 48h.
+    # TUNE after the first epoch: read the "epoch 0: ... (Y min)" line and set
+    # n_epochs ~= floor(40h / Y). Keep it IDENTICAL for 13 and 37 (the cosine LR
+    # is sized to this number, and equal epochs = equal, fair budget).
+    n_epochs: 6                              # starting guess; adjust to fit ~40h
     batch_size: 1
     lr_scheduler: True
     low_lr: 0.00001
