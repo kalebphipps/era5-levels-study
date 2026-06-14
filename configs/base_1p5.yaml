@@ -19,8 +19,8 @@ data:
     constant_masks_path: "/hkfs/work/workspace/scratch/xk5289-level_comparison/era5-levels-study/data/constant_masks_1p5"
     constant_masks: ["soil_type_normalized.npy", "topography_normalized.npy", "land_mask.npy"]
     normalization_dir: "PLACEHOLDER"
-    train_time_range: ["2010-01-01", "2019-12-31"]
-    valid_time_range: ["2020-01-01", "2020-12-31"]
+    train_time_range: ["1979-01-01", "2021-12-31"]
+    valid_time_range: ["2022-01-01", "2022-12-31"]
     train_subset: -1
     valid_subset: -1
     dataset_subsampling: 1
