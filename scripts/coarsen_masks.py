@@ -21,7 +21,21 @@ import numpy as np
 
 
 def coarsen_2d(arr: np.ndarray, factor: int) -> np.ndarray:
-    """Block-mean a (lat, lon) array by `factor`, trimming any remainder."""
+    """Block-mean a 2-D ``(lat, lon)`` array, trimming any remainder.
+
+    Parameters
+    ----------
+    arr : numpy.ndarray
+        Input field of shape ``(lat, lon)``.
+    factor : int
+        Block size; each ``factor x factor`` block is averaged. Trailing rows/
+        columns that don't fill a block are dropped.
+
+    Returns
+    -------
+    numpy.ndarray
+        Coarsened ``float32`` field of shape ``(lat // factor, lon // factor)``.
+    """
     a = arr.astype(np.float64)
     nlat = (a.shape[0] // factor) * factor
     nlon = (a.shape[1] // factor) * factor
@@ -31,6 +45,7 @@ def coarsen_2d(arr: np.ndarray, factor: int) -> np.ndarray:
 
 
 def main():
+    """Parse CLI args and block-mean each mask to the coarse grid."""
     ap = argparse.ArgumentParser()
     ap.add_argument("masks", nargs="+", help="0.25deg mask .npy files (lat, lon)")
     ap.add_argument("--factor", type=int, default=6)

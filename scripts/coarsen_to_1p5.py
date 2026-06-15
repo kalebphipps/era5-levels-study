@@ -33,6 +33,7 @@ import xarray as xr
 
 
 def main():
+    """Parse CLI args and coarsen the input zarr block-by-block (resumable)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="inp", required=True, help="0.25deg 37-level zarr")
     ap.add_argument("--out", required=True, help="output 1.5deg zarr")

@@ -41,7 +41,20 @@ DEFAULT_PRESSURE_VARS = ["geopotential", "temperature", "u_component_of_wind",
 
 
 def parse_variable(name: str):
-    """'geopotential_500' -> ('geopotential', 500); '2m_temperature' -> (name, None)."""
+    """Split a feature name into its base name and (optional) pressure level.
+
+    Parameters
+    ----------
+    name : str
+        A feature name, e.g. ``"geopotential_500"`` or ``"2m_temperature"``.
+
+    Returns
+    -------
+    base : str
+        The base variable name.
+    level : int or None
+        The pressure level (hPa), or ``None`` for surface variables.
+    """
     head, _, tail = name.rpartition("_")
     if head and tail.isdigit():
         return head, int(tail)
@@ -49,6 +62,18 @@ def parse_variable(name: str):
 
 
 def load(csv_path: str) -> pd.DataFrame:
+    """Load a ``metrics.csv`` and add parsed ``base`` / ``level`` columns.
+
+    Parameters
+    ----------
+    csv_path : str
+        Path to a ``metrics.csv`` written during validation.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The metrics with extra ``base`` and ``level`` columns.
+    """
     df = pd.read_csv(csv_path)
     df[["base", "level"]] = df["variable"].apply(
         lambda v: pd.Series(parse_variable(v)))
@@ -56,6 +81,18 @@ def load(csv_path: str) -> pd.DataFrame:
 
 
 def latest_epoch(df: pd.DataFrame) -> pd.DataFrame:
+    """Return the rows for the latest epoch in a metrics frame.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        A metrics frame with an ``epoch`` column.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A copy containing only the rows at the maximum epoch.
+    """
     return df[df["epoch"] == df["epoch"].max()].copy()
 
 
@@ -63,6 +100,19 @@ def latest_epoch(df: pd.DataFrame) -> pd.DataFrame:
 # 1. per-level RMSE curves
 # ---------------------------------------------------------------------------- #
 def plot_per_level_curves(df13, df37, variables, out_dir):
+    """Plot per-level RMSE curves (13 vs 37) and save ``per_level_rmse.png``.
+
+    Parameters
+    ----------
+    df13 : pandas.DataFrame or None
+        Metrics from the 13-level run (skipped if ``None``).
+    df37 : pandas.DataFrame or None
+        Metrics from the 37-level run (skipped if ``None``).
+    variables : list of str
+        Base pressure-variable names to plot, one subplot each.
+    out_dir : str
+        Output directory for the figure.
+    """
     runs = [("37-level", df37, "C1"), ("13-level", df13, "C0")]
     runs = [(lbl, d, c) for lbl, d, c in runs if d is not None]
     if not runs:
@@ -100,6 +150,21 @@ def plot_per_level_curves(df13, df37, variables, out_dir):
 # 2. improvement heatmap (37 vs 13)
 # ---------------------------------------------------------------------------- #
 def plot_improvement_heatmap(df13, df37, out_dir):
+    """Plot a variable-by-level RMSE-change heatmap and save it.
+
+    The cell value is the percentage RMSE change of 37-level relative to
+    13-level (negative means 37-level is better). Saves
+    ``improvement_heatmap.png``.
+
+    Parameters
+    ----------
+    df13 : pandas.DataFrame or None
+        Metrics from the 13-level run (no-op if ``None``).
+    df37 : pandas.DataFrame or None
+        Metrics from the 37-level run (no-op if ``None``).
+    out_dir : str
+        Output directory for the figure.
+    """
     if df13 is None or df37 is None:
         return
     a = latest_epoch(df13).set_index("variable")["model"]
@@ -141,6 +206,16 @@ def plot_improvement_heatmap(df13, df37, out_dir):
 # 3. learning curves
 # ---------------------------------------------------------------------------- #
 def plot_learning_curves(dfs, out_dir):
+    """Plot mean RMSE vs epoch for each run and save ``learning_curves.png``.
+
+    Parameters
+    ----------
+    dfs : list of tuple
+        Sequence of ``(label, dataframe, color)`` entries; entries whose
+        dataframe is ``None`` are skipped.
+    out_dir : str
+        Output directory for the figure.
+    """
     fig, ax = plt.subplots(figsize=(6, 4))
     for lbl, d, c in dfs:
         if d is None:
@@ -168,6 +243,18 @@ def plot_learning_curves(dfs, out_dir):
 # 4. maps
 # ---------------------------------------------------------------------------- #
 def plot_maps(maps_dir, out_dir):
+    """Render prediction/truth/error map triptychs from ``.npy`` dumps.
+
+    For every ``<var>_pred.npy`` in ``maps_dir`` (with matching ``_true`` /
+    ``_err``), saves a ``map_<var>.png`` panel.
+
+    Parameters
+    ----------
+    maps_dir : str
+        Directory holding the ``<var>_{pred,true,err}.npy`` dumps.
+    out_dir : str
+        Output directory for the figures.
+    """
     preds = sorted(glob.glob(os.path.join(maps_dir, "*_pred.npy")))
     for pred_path in preds:
         var = os.path.basename(pred_path)[: -len("_pred.npy")]
@@ -194,6 +281,7 @@ def plot_maps(maps_dir, out_dir):
 
 
 def main():
+    """Parse CLI args and render the requested poster figures."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv13", help="metrics.csv from the 13-level run")
     ap.add_argument("--csv37", help="metrics.csv from the 37-level run")

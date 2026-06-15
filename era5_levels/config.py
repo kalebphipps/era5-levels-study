@@ -21,8 +21,22 @@ from .variable_layout import num_variables
 def load_config(path: str, overlays: list[str] | None = None) -> dict:
     """Load a base YAML and apply optional overlay YAMLs (later wins).
 
-    Overlays let you keep one shared `base_0p25.yaml` and tiny `levels13.yaml` /
-    `levels37.yaml` files that only set `data.pressure_levels`.
+    Overlays let you keep one shared ``base_*.yaml`` and tiny ``levels13.yaml`` /
+    ``levels37.yaml`` files that only set ``data.pressure_levels`` and the data
+    paths.
+
+    Parameters
+    ----------
+    path : str
+        Path to the base YAML config.
+    overlays : list of str, optional
+        Paths to overlay YAMLs, applied in order on top of the base. Later
+        overlays override earlier ones and the base (deep merge).
+
+    Returns
+    -------
+    dict
+        The merged configuration dictionary.
     """
     with open(path) as f:
         cfg = yaml.safe_load(f)
@@ -33,6 +47,20 @@ def load_config(path: str, overlays: list[str] | None = None) -> dict:
 
 
 def _deep_update(base: dict, new: dict) -> dict:
+    """Recursively merge ``new`` into ``base`` in place.
+
+    Parameters
+    ----------
+    base : dict
+        Dictionary to update in place.
+    new : dict
+        Dictionary whose entries override (or recurse into) ``base``.
+
+    Returns
+    -------
+    dict
+        The mutated ``base`` dictionary.
+    """
     for k, v in new.items():
         if isinstance(v, dict) and isinstance(base.get(k), dict):
             _deep_update(base[k], v)
@@ -42,10 +70,30 @@ def _deep_update(base: dict, new: dict) -> dict:
 
 
 def finalize_config(cfg: dict) -> dict:
-    """Derive channel counts + resolve env-dependent paths/mesh.
+    """Derive channel counts and resolve env-dependent paths/mesh.
 
-    Mirrors the essential parts of beast's setup_config_dict, but drives the
-    channel counts from `pressure_levels` so 13 vs 37 is automatic.
+    Mirrors the essential parts of beast's ``setup_config_dict``, but drives the
+    channel counts from ``data.pressure_levels`` so switching 13 vs 37 levels is
+    automatic and the rest of the config stays byte-identical between the two
+    runs. Also resolves a single ``-1`` mesh entry from the world size and
+    prepends ``$DATA_DIR`` / ``$WORKDIR`` to relative data paths.
+
+    Parameters
+    ----------
+    cfg : dict
+        The loaded (pre-finalized) configuration dictionary.
+
+    Returns
+    -------
+    dict
+        The same dictionary, mutated in place with derived
+        ``n_variables`` / ``n_input_channels`` / ``n_output_channels``, the
+        resolved mesh, and absolute data paths.
+
+    Raises
+    ------
+    KeyError
+        If ``data.pressure_levels`` is missing.
     """
     data, model = cfg["data"], cfg["model"]
 
