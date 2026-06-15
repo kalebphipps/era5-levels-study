@@ -10,6 +10,7 @@
 #
 #SBATCH --job-name=levels_1p5
 #SBATCH --partition=accelerated-h200-8   # 8x H200 / node (check the exact name with sinfo)
+#SBATCH --account=hk-project-test-p0028019   # HoreKa requires this. Override on the fly: sbatch --account=<other> slurm/submit_train_1p5.sh ...
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=8              # = product(mesh_dims) = 8
 #SBATCH --gres=gpu:8

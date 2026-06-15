@@ -12,6 +12,7 @@
 #
 #SBATCH --job-name=levels
 #SBATCH --partition=TODO_PARTITION      # <- e.g. accelerated-h200 or accelerated-h100
+#SBATCH --account=hk-project-test-p0028019   # HoreKa requires this. Override: sbatch --account=<other> slurm/submit_train.sh ...
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4             # = GPUs per node = product(mesh_dims)
 #SBATCH --gres=gpu:4

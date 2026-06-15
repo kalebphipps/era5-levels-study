@@ -28,7 +28,7 @@ prev=""
 for i in $(seq 1 "$N"); do
     dep=""
     [ -n "$prev" ] && dep="--dependency=afterany:$prev"
-    jid=$(sbatch --parsable $dep \
+    jid=$(sbatch --parsable $dep ${ACCOUNT:+--account="$ACCOUNT"} \
           --export=ALL,RUN_DIR="$RUN_DIR" \
           slurm/submit_train.sh "$BASE" "$OVERLAY")
     echo "  link $i/$N: job $jid ${prev:+(after $prev)}"

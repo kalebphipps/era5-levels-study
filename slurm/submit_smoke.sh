@@ -7,6 +7,7 @@
 #
 #SBATCH --job-name=levels_smoke
 #SBATCH --partition=TODO_DEV_PARTITION   # a short dev/test queue
+#SBATCH --account=hk-project-test-p0028019   # HoreKa requires this. Override: sbatch --account=<other> ...
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:1
