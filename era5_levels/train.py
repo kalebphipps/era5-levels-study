@@ -34,12 +34,30 @@ def build_model(cfg, device, dtype, groups):
     """Build the (deterministic) Beast model from the study config.
 
     Post-refactor there is a single ``Beast`` class (no Tiny/Grand split) with a
-    keyword-only constructor. Only ``patch_embedding``/``patch_recovery`` depend
-    on the channel count, so keeping every arg below identical across the 13- and
-    37-level runs (only ``in/out_channels`` differ) is what keeps the comparison
-    fair. Note the ctor uses ``height``/``width`` (not xlat/xlon), takes explicit
-    ``stride``/``padding``/``dilation``, and no longer takes ``ep_group`` /
-    ``parallelism`` / ``flash_attn`` (the Expert wrapper handles ep_group).
+    keyword-only constructor. Only ``patch_embedding`` / ``patch_recovery``
+    depend on the channel count, so keeping every argument below identical across
+    the 13- and 37-level runs (only ``in/out_channels`` differ) is what keeps the
+    comparison fair. Note the constructor uses ``height`` / ``width`` (not
+    xlat/xlon), takes explicit ``stride`` / ``padding`` / ``dilation``, and no
+    longer takes ``ep_group`` / ``parallelism`` / ``flash_attn`` (the Expert
+    wrapper handles ``ep_group``).
+
+    Parameters
+    ----------
+    cfg : dict
+        The finalized study config (``model`` and ``data`` sections are used).
+    device : torch.device
+        Device to build the model on.
+    dtype : torch.dtype
+        Parameter/compute dtype.
+    groups : dict
+        Mapping of logical group name to ``torch.distributed.ProcessGroup``
+        (``JChannel`` / ``JSpatial`` / ``DTP`` / ``SP`` are used here).
+
+    Returns
+    -------
+    beast.model.Beast
+        The constructed model, moved to ``device`` and ``dtype``.
     """
     Beast = beast_api.get_model_class()
     m, mdl = cfg["model"], cfg["data"]
@@ -71,6 +89,21 @@ def build_model(cfg, device, dtype, groups):
 
 
 def training_loop(cfg):
+    """Run the full deterministic training (and in-loop validation) loop.
+
+    Builds the model and dataloaders, wraps the model in the universal Expert and
+    ``DistributedDataParallel``, optionally loads a frozen transfer core,
+    auto-resumes from any checkpoints already in the run dir, then trains for the
+    configured number of epochs. On each validation pass it writes scalar loss,
+    per-variable RMSE (+ persistence/climatology baselines) to ``metrics.csv``,
+    and optional sample-field maps.
+
+    Parameters
+    ----------
+    cfg : dict
+        The finalized study config. Must include ``run_dir`` (or the environment
+        fallbacks) for checkpoint/metric output.
+    """
     _, get_pg = beast_api.get_comm()
     groups = {n: get_pg(n) for n in
               ("JSpatial", "JChannel", "DTP", "SP", "DP", "DDP", "Expert")}
@@ -206,6 +239,36 @@ def training_loop(cfg):
 
 def train_one_epoch(cfg, epoch, dl, model, optimizer, loss_fn, sqrt_w, device,
                     dtp_group, ckpt_path):
+    """Train for one epoch and return the DTP-averaged mean loss.
+
+    Parameters
+    ----------
+    cfg : dict
+        The finalized study config (``training`` section is used).
+    epoch : int
+        Current epoch index (also seeds the distributed sampler).
+    dl : torch.utils.data.DataLoader
+        Training dataloader.
+    model : torch.nn.Module
+        The DDP-wrapped model.
+    optimizer : torch.optim.Optimizer
+        Optimizer.
+    loss_fn : LatitudeWeightedMSE
+        Latitude-weighted MSE loss.
+    sqrt_w : torch.Tensor
+        Square root of the spatial weights, passed to ``loss_fn``.
+    device : torch.device
+        Compute device.
+    dtp_group : torch.distributed.ProcessGroup
+        Domain-tensor-parallel group, over which the loss is averaged.
+    ckpt_path : str
+        Directory for periodic step checkpoints.
+
+    Returns
+    -------
+    float
+        Mean training loss for the epoch, averaged over the DTP group.
+    """
     model.train()
     autocast = cfg["training"]["autocast"]
     ckpt_every = cfg["training"]["checkpoint_interval"]
@@ -234,6 +297,28 @@ def train_one_epoch(cfg, epoch, dl, model, optimizer, loss_fn, sqrt_w, device,
 
 @torch.no_grad()
 def validate(dl, model, loss_fn, sqrt_w, device, dtp_group):
+    """Compute the DTP-averaged scalar validation loss.
+
+    Parameters
+    ----------
+    dl : torch.utils.data.DataLoader
+        Validation dataloader.
+    model : torch.nn.Module
+        The DDP-wrapped model.
+    loss_fn : LatitudeWeightedMSE
+        Latitude-weighted MSE loss.
+    sqrt_w : torch.Tensor
+        Square root of the spatial weights, passed to ``loss_fn``.
+    device : torch.device
+        Compute device.
+    dtp_group : torch.distributed.ProcessGroup
+        Domain-tensor-parallel group, over which the loss is averaged.
+
+    Returns
+    -------
+    float
+        Mean validation loss, averaged over the DTP group.
+    """
     model.eval()
     loss_sum = torch.zeros(1, device=device)
     for batch in dl:

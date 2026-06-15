@@ -26,7 +26,23 @@ _CKPT_RE = re.compile(r"cp-epoch(\d+)(?:-step(\d+))?-e(\d+)-jc(\d+)\.pt$")
 
 
 def save_checkpoint(checkpoint_path, model, optimizer, epoch, step, loss) -> None:
-    """Write this shard's checkpoint (only DDP-rank 0 of the shard writes)."""
+    """Write this shard's checkpoint (only DDP-rank 0 of the shard writes).
+
+    Parameters
+    ----------
+    checkpoint_path : str
+        Directory to write the ``.pt`` file into (created if missing).
+    model : torch.nn.Module
+        The (DDP-wrapped) model whose ``state_dict`` is saved.
+    optimizer : torch.optim.Optimizer
+        Optimizer whose ``state_dict`` is saved.
+    epoch : int
+        Epoch index (encoded in the filename).
+    step : int
+        Step index within the epoch (encoded in the filename).
+    loss : float or torch.Tensor
+        Loss value to store (``.item()`` is called if it is a tensor).
+    """
     channel_group = beast_api.get_process_group("JChannel")
     ep_group = beast_api.get_process_group("Expert")
     ddp_rank = beast_api.get_process_group("DDP").rank()
@@ -51,6 +67,20 @@ def save_checkpoint(checkpoint_path, model, optimizer, epoch, step, loss) -> Non
 
 
 def _load_one(path, map_location="cpu"):
+    """Load a single checkpoint file into its component tuple.
+
+    Parameters
+    ----------
+    path : str
+        Path to the ``.pt`` checkpoint file.
+    map_location : str or torch.device, optional
+        Passed to ``torch.load`` (default ``"cpu"``).
+
+    Returns
+    -------
+    tuple
+        ``(model_sd, optim_sd, epoch, step, ep_rank, jc_rank, loss)``.
+    """
     cp = torch.load(path, map_location=map_location, weights_only=False)
     return (
         cp["model_state_dict"],
@@ -66,8 +96,21 @@ def _load_one(path, map_location="cpu"):
 def load_latest_model_states(directory):
     """Return the latest checkpoint tuple for *this rank's* (ep, jc) shard.
 
-    ``directory`` is the run dir; checkpoints live in ``<directory>/checkpoints``.
-    Returns (model_sd, optim_sd, epoch, step, ep_rank, jc_rank, loss).
+    Parameters
+    ----------
+    directory : str
+        The run directory; checkpoints live in ``<directory>/checkpoints``.
+
+    Returns
+    -------
+    tuple
+        ``(model_sd, optim_sd, epoch, step, ep_rank, jc_rank, loss)`` for the
+        latest matching checkpoint.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no checkpoint exists for this rank's (ep, jc) shard.
     """
     ckpt_dir = os.path.join(directory, "checkpoints")
     ep_rank = beast_api.get_process_group("Expert").rank()
@@ -93,10 +136,32 @@ def load_latest_model_states(directory):
 
 
 def load_state_dict(model, optimizer, model_state_dict, optimizer_state_dict, last_epoch):
-    """Load weights+optimizer into the (DDP-wrapped) model; return start_epoch.
+    """Load weights and optimizer into the (DDP-wrapped) model.
 
     Best-effort: if the shapes don't match (e.g. a config changed), fall back to
     a fresh start rather than crashing.
+
+    Parameters
+    ----------
+    model : torch.nn.Module
+        The (DDP-wrapped) model to load into.
+    optimizer : torch.optim.Optimizer
+        The optimizer to load into.
+    model_state_dict : dict
+        Saved model state dict.
+    optimizer_state_dict : dict
+        Saved optimizer state dict.
+    last_epoch : int
+        The epoch the checkpoint was saved at.
+
+    Returns
+    -------
+    model : torch.nn.Module
+        The (possibly updated) model.
+    optimizer : torch.optim.Optimizer
+        The (possibly updated) optimizer.
+    start_epoch : int
+        ``last_epoch + 1`` on success, or ``0`` if the load failed.
     """
     try:
         model.load_state_dict(model_state_dict)

@@ -38,6 +38,17 @@ def check_indices():
 
 
 def run_distributed(args):
+    """Rebuild the sharded model, load its checkpoint, and score the 13-level subset.
+
+    Runs inside the same process mesh as training (one task per GPU). Per-variable
+    RMSE is reduced across the mesh and restricted to the 13 standard levels, then
+    written to ``<results-dir>/subset_metrics.csv`` on rank 0.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed CLI arguments (``config``, ``overlay``, ``results_dir``, ...).
+    """
     import torch.distributed as dist
 
     from era5_levels import beast_api

@@ -36,6 +36,14 @@ from era5_levels.variable_layout import (
 
 
 def subset_indices() -> list[int]:
+    """Return the 37-level channel indices that make up the 13-level layout.
+
+    Returns
+    -------
+    list of int
+        Channel positions in the 37-level store, in
+        ``build_ordered_variables(PRESSURE_LEVELS_13)`` order.
+    """
     full = build_ordered_variables(PRESSURE_LEVELS_37)
     sub = build_ordered_variables(PRESSURE_LEVELS_13)
     pos = {name: i for i, name in enumerate(full)}
@@ -43,6 +51,7 @@ def subset_indices() -> list[int]:
 
 
 def main():
+    """Parse CLI args and write the 13-level subset zarr (+ norm), resumably."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="inp", required=True, help="37-level zarr")
     ap.add_argument("--out", required=True, help="output 13-level zarr")

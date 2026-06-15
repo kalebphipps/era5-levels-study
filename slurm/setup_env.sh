@@ -5,8 +5,12 @@
 #   export BEAST_DIR=$HOME/beast           # your local beast checkout
 #   bash slurm/setup_env.sh
 #
-# Installs a CUDA-matched PyTorch, then `pip install -e` your beast checkout
-# (which pulls jigsaw + torch_blue per its pyproject) and this study package.
+# Installs a CUDA-matched PyTorch, then editable-installs beast AND its jigsaw
+# submodule, then this study package. NOTE: jigsaw is a git submodule of beast
+# (libs/jigsaw) and is imported as a top-level `jigsaw` package; it is NOT listed
+# in beast's pyproject, so `pip install -e beast` alone does not provide it. We
+# init the submodule and install it explicitly. torch_blue IS a git dependency in
+# beast's pyproject and installs automatically.
 set -euo pipefail
 
 : "${WS:?Set WS, e.g. export WS=\$(ws_find levels)}"
@@ -25,20 +29,25 @@ fi
 source "$VENV_DIR/bin/activate"
 pip install --upgrade pip
 
-# PyTorch first (CUDA wheel), then beast (editable, brings jigsaw/torch_blue),
-# then this study repo (editable).
+# Make sure the jigsaw submodule is checked out in the beast tree.
+git -C "$BEAST_DIR" submodule update --init --recursive
+
+# PyTorch first (CUDA wheel), then beast (editable, brings torch_blue), then the
+# jigsaw submodule (editable, top-level `jigsaw` import), then this study repo.
 pip install --upgrade torch --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}"
 pip install -e "$BEAST_DIR"
+pip install -e "$BEAST_DIR/libs/jigsaw"
 pip install -e "$(cd "$(dirname "$0")/.." && pwd)"
 
 python - <<'PY'
 import torch
 print("torch", torch.__version__, "cuda", torch.cuda.is_available())
-try:
-    import era5_levels, importlib
-    importlib.import_module("era5_levels.config")
-    print("era5_levels OK")
-except Exception as e:
-    print("era5_levels import issue:", e)
+for mod in ("jigsaw", "beast", "era5_levels.config"):
+    try:
+        import importlib
+        importlib.import_module(mod)
+        print(f"{mod} OK")
+    except Exception as e:
+        print(f"{mod} import issue:", e)
 PY
 echo "Activate later with:  source $VENV_DIR/bin/activate"

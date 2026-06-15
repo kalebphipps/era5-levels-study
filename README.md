@@ -51,7 +51,7 @@ compare — you don't need convergence, you need parity.
 era5_levels/
   variable_layout.py   # vendored: the 13/37 channel-order source of truth (stdlib only)
   config.py            # load YAML + derive channel counts from pressure_levels
-  beast_api.py         # the ONLY place that imports beast (beast→gb fallback, dist bootstrap, model/Expert relocations)
+  beast_api.py         # the ONLY place that imports beast (model/Expert/comm/dataloader handles, dist bootstrap)
   checkpoint.py        # vendored sharded save/resume (the beast checkpoint fns moved to an unmerged PR)
   losses.py            # latitude-weighted MSE (deterministic loss)
   train.py             # deterministic training loop (adapted from BellBeast, beast APIs)
@@ -59,16 +59,24 @@ era5_levels/
   transfer.py          # frozen-core transfer (freeze all but patch_embedding/recovery)
   main.py              # entrypoint: bootstrap dist+mesh -> training_loop
 configs/
-  base_0p25.yaml       # shared core config (identical for both runs)
-  levels13.yaml        # overlay: pressure_levels (13) + data paths
-  levels37.yaml        # overlay: pressure_levels (37) + data paths
+  base_1p5.yaml        # shared core config for the headline 1.5° run (both levels)
+  levels13_1p5.yaml    # overlay: pressure_levels (13) + 1.5° data paths
+  levels37_1p5.yaml    # overlay: pressure_levels (37) + 1.5° data paths
+  base_0p25.yaml       # shared core config for the full-resolution 0.25° run
+  levels13.yaml / levels37.yaml   # 0.25° overlays
   smoke.yaml           # tiny 1-GPU config, dummy data, for a pipeline check
+  smoke_nout2.yaml     # 1-GPU smoke for the 2-in/2-out (multi-step) path
 slurm/
-  setup_env.sh         # venv on a workspace + pip install -e beast + this repo
+  setup_env.sh         # venv on a workspace + editable beast (+ its jigsaw submodule) + this repo
   submit_smoke.sh      # 1-GPU end-to-end smoke job
-  submit_train.sh      # multi-GPU training (HoreKa TEAL/Ruby), stable RUN_DIR + auto-resume
+  submit_train_1p5.sh  # multi-GPU 1.5° training (HoreKa H200), stable RUN_DIR + auto-resume
+  submit_train.sh      # multi-GPU 0.25° training, stable RUN_DIR + auto-resume
   submit_chain.sh      # chain of afterany jobs sharing RUN_DIR — survives time-limit kills
+  coarsen_*.sh / submit_subset.sh   # data-prep jobs (coarsen to 1.5°, carve the 13-level subset)
 scripts/
+  coarsen_to_1p5.py    # block-mean a 0.25° zarr to 1.5° (resumable)
+  coarsen_masks.py     # block-mean the constant masks the same way
+  make_level_subset.py # carve the 13-level store from the 37-level one (+ subset norm)
   run_subset_eval.py   # free 37→13 comparison — distributed entrypoint (+ --check-indices)
   plot_results.py      # offline poster figures from metrics.csv + map dumps (laptop, no beast)
 ```
@@ -76,27 +84,34 @@ scripts/
 ## Setup & run (HoreKa)
 
 ```bash
-# 0. install (once): venv on a workspace, editable beast + this repo
+# 0. install (once): venv on a workspace, editable beast (+ jigsaw submodule) + this repo
 export WS=$(ws_find levels)
-export BEAST_DIR=$HOME/beast          # your beast checkout (you pip install -e it)
+export BEAST_DIR=$HOME/beast          # your beast checkout
 bash slurm/setup_env.sh
+# setup_env.sh does the full sequence; the beast part is, in effect:
+#   git -C $BEAST_DIR submodule update --init --recursive   # jigsaw is a submodule
+#   pip install -e $BEAST_DIR                                # beast (pulls torch_blue)
+#   pip install -e $BEAST_DIR/libs/jigsaw                    # jigsaw (top-level import,
+#                                                            #   NOT a beast pyproject dep)
 
 # 1. prove the pipeline runs end-to-end (random dummy data, tiny model)
 sbatch slurm/submit_smoke.sh
 
 # 2. train the matched pair (edit data paths in the overlays + partition/nodes first).
-#    Use submit_chain.sh for long runs: each link auto-resumes from the shared
-#    RUN_DIR, so SLURM time-limit kills don't cost progress. The two chains run
-#    in parallel (independent jobs).
+#    The headline runs at 1.5° (base_1p5 + levels{13,37}_1p5) — affordable to
+#    train to compute-parity by the deadline; swap in base_0p25 + levels{13,37}
+#    for the full-resolution run. Use submit_chain.sh for long runs: each link
+#    auto-resumes from the shared RUN_DIR, so SLURM time-limit kills don't cost
+#    progress. The two chains run in parallel (independent jobs).
 export DATA_DIR=/path/to/zarr_root ; export WORKDIR=$(pwd)
-bash slurm/submit_chain.sh configs/base_0p25.yaml configs/levels13.yaml 4
-bash slurm/submit_chain.sh configs/base_0p25.yaml configs/levels37.yaml 4
-# (or a single job each: sbatch slurm/submit_train.sh configs/base_0p25.yaml configs/levels13.yaml)
+bash slurm/submit_chain.sh configs/base_1p5.yaml configs/levels13_1p5.yaml 4
+bash slurm/submit_chain.sh configs/base_1p5.yaml configs/levels37_1p5.yaml 4
+# (or a single job each: sbatch slurm/submit_train_1p5.sh configs/base_1p5.yaml configs/levels13_1p5.yaml)
 
 # 3. headline comparison (DISTRIBUTED, same mesh as training, after both finish)
 python scripts/run_subset_eval.py --check-indices    # pure-python channel-index sanity
 srun python -u scripts/run_subset_eval.py \
-    --config configs/base_0p25.yaml --overlay configs/levels37.yaml \
+    --config configs/base_1p5.yaml --overlay configs/levels37_1p5.yaml \
     --results-dir $WS/results/levels37
 
 # 4. poster figures (offline, on your laptop — no beast/GPU)
@@ -112,8 +127,8 @@ The only config difference between the two runs is the overlay
 a GPU/beast:
 
 ```bash
-python -m era5_levels.main --config configs/base_0p25.yaml \
-    --overlay configs/levels37.yaml --dry-run
+python -m era5_levels.main --config configs/base_1p5.yaml \
+    --overlay configs/levels37_1p5.yaml --dry-run
 ```
 
 ## Outputs (for the poster)
@@ -137,7 +152,9 @@ Each validation pass (rank 0) writes to the run's results dir:
 - **`mesh_dims`** = `[experts, dp, up, jigsaw-spatial, jigsaw-channel]`; the
   product must equal your GPU count. We use **experts=1** (universal expert →
   avoids the per-expert hardcoded level slicing) and **up=1** (deterministic, no
-  sample parallelism). Default `[1,1,1,4,2]` = 8 GPUs.
+  sample parallelism). At 0.25° we use `[1,1,1,4,2]` = 8 GPUs; at 1.5° the
+  240-lon grid won't tile with `jspatial=4` (240/16=15 has no even divisor), so
+  the 1.5° config scales via data parallelism instead — `[1,2,1,2,2]` = 8 GPUs.
 - **Speed levers at 0.25°:** the default window sizes are the hero-proven
   divisible values for this grid (guaranteed to tile) but are large
   (near-global). Once a run works, **shrink the windows** (biggest lever) and/or
@@ -149,31 +166,53 @@ Each validation pass (rank 0) writes to the run's results dir:
 
 ---
 
-## Status: nothing real is validated until the cluster
+## Status & where it runs
 
-Be clear-eyed — this is scaffold. **Nothing has actually been run end-to-end.**
 The model and data are sharded across GPUs (channels over `JChannel`, longitude
-over `JSpatial`), so the full field never exists on a single rank and **cannot be
-built, trained, or evaluated off-cluster at all** — not even at reduced scale.
-That covers everything that matters: model build, dataloader, the training step,
-and **all evaluation** (metrics are computed on local shards and reduced —
-spatial means `all_reduce`'d over `JSpatial`, per-variable RMSE `all_gather`'d
-over `JChannel`, mirroring beast's own reductions; swap to `beast.evaluation`
-once it stabilises).
+over `JSpatial`), so the full field never exists on a single rank and the
+pipeline **cannot be built, trained, or evaluated off-cluster** — not even at
+reduced scale. That covers everything that matters: model build, dataloader, the
+training step, and **all evaluation** (metrics are computed on local shards and
+reduced — spatial means `all_reduce`'d over `JSpatial`, per-variable RMSE
+`all_gather`'d over `JChannel`, mirroring beast's own reductions).
 
 The *only* things that execute off-cluster are a couple of **pure-Python sanity
-checks** with no beast/GPU/data involved — `--dry-run` (config + channel
-arithmetic) and `--check-indices` (the 37→13 channel index map). They confirm
-bookkeeping, nothing more.
+checks** — `--dry-run` (config + channel arithmetic) and `--check-indices` (the
+37→13 channel index map). They confirm bookkeeping, nothing more.
 
-So the first real validation is on the cluster: the code targets the
-beast/BellBeast APIs as they exist today, but beast is mid-rename (`gb` →
-`beast`) and mid-refactor, so expect to fix imports/signatures —
-**`beast_api.py` is the single place** to do that. **Treat `submit_smoke.sh` as
-the integration test and get it green before launching the 0.25° pair.**
+On the cluster the pipeline **has run end-to-end**: `submit_smoke.sh` is green,
+and the deterministic loop reaches steady training on real ERA5 (model build →
+dataloader → training step → checkpoint/resume all exercised). Treat
+`submit_smoke.sh` as the integration test and get it green after any beast bump;
+**`beast_api.py` is the single place** to fix an import/signature if beast moves
+something.
 
 This repo intentionally does **not** vendor or modify beast's model/dataloader —
 those come from your `pip install -e` checkout, so beast fixes flow in for free.
-The one beast-side change the study benefits from (generalizing the deprecated
-top-level `evaluation.py`'s hardcoded 13-level list) is sidestepped here by using
-the small local `evaluate.py`; adopt `beast.evaluation` once it stabilizes.
+The one exception is `checkpoint.py` (vendored, see its module docstring) because
+the sharded save/resume helpers were dropped from `beast.utils` in the refactor.
+For evaluation we use the small local `evaluate.py`; adopt `beast.evaluation`
+once that subpackage stabilises.
+
+### Resolution: 0.25° vs 1.5°
+
+The *fair-comparison* argument is resolution-independent — pressure levels live
+on the channel axis, so coarsening longitude/latitude is orthogonal to the
+13-vs-37 question. The headline trained comparison therefore runs at **1.5°**
+(`configs/base_1p5.yaml` + `levels{13,37}_1p5.yaml`, launched with
+`slurm/submit_train_1p5.sh`), which is affordable to train to compute-parity by
+the deadline while keeping all 37 vertical levels. The 0.25° configs
+(`base_0p25.yaml` + `levels{13,37}.yaml`) are kept for the full-resolution run if
+compute allows. Coarsen your 0.25° 37-level zarr to 1.5° with
+`scripts/coarsen_to_1p5.py` (and the masks with `scripts/coarsen_masks.py`); the
+13-level store is carved from the 37-level one with `scripts/make_level_subset.py`.
+
+### Multi-step (`n_in=2` / `n_out=2`)
+
+`config.py` derives `n_input_channels` / `n_output_channels` from
+`n_in_timesteps` / `n_out_timesteps`, so 2-in/2-out works as a config change
+(`configs/smoke_nout2.yaml` is the single-GPU smoke for it). Note: the local
+`evaluate.py` scores the variables as laid out on the channel axis; for
+`n_out_timesteps>1` the output channels are `[timestep-0 vars, timestep-1 vars]`,
+so per-variable RMSE is reported per output timestep — interpret the metric rows
+accordingly.

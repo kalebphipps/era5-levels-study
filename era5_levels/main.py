@@ -21,12 +21,22 @@ from .config import finalize_config, load_config
 
 
 def resolve_run_dir(arg: str | None) -> str:
-    """Stable output dir for checkpoints + metrics.
+    """Resolve the stable output dir for checkpoints + metrics.
 
-    Precedence: ``--run-dir`` > ``$RUN_DIR`` > ``$OUTPUT_DIR/<partition>/<jobid>``.
     Chained jobs share the same RUN_DIR so a job that resumes finds the previous
     job's checkpoints (the per-jobid fallback is only for one-off interactive
     runs, which don't resume).
+
+    Parameters
+    ----------
+    arg : str or None
+        The ``--run-dir`` CLI value, if any.
+
+    Returns
+    -------
+    str
+        The run directory, by precedence ``--run-dir`` > ``$RUN_DIR`` >
+        ``$OUTPUT_DIR/<partition>/<jobid>``.
     """
     if arg:
         return arg
@@ -37,7 +47,14 @@ def resolve_run_dir(arg: str | None) -> str:
                         os.environ.get("SLURM_JOB_ID", "interactive"))
 
 
-def main():
+def main() -> None:
+    """Parse CLI args, finalize the config, bootstrap distributed, and train.
+
+    With ``--dry-run`` the finalized config and derived channel counts are
+    printed and the function returns without importing beast or touching a GPU.
+    Otherwise it initialises the process mesh and runs
+    :func:`era5_levels.train.training_loop`.
+    """
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True, help="base YAML config")
     ap.add_argument("--overlay", action="append", default=[],

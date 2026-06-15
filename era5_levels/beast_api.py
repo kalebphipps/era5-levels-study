@@ -1,10 +1,9 @@
-"""Single adapter for every `beast` touch-point.
+"""Single adapter for every ``beast`` touch-point.
 
-`beast` is installed separately (``pip install -e .`` in your beast checkout)
-and is mid-rename: its internal modules currently import under the ``gb.*``
-namespace while the package is moving to ``beast.*``. Rather than scatter that
-uncertainty across the codebase, every import of beast goes through here, with a
-``beast`` → ``gb`` fallback. When the rename settles you change ONE file.
+``beast`` is installed separately (``pip install -e .`` in your beast checkout,
+plus its jigsaw submodule). Rather than scatter beast imports across the
+codebase, every import of beast goes through this module. If beast moves a class
+or renames a module, this is the ONE file to change.
 
 Imports are done lazily inside functions so the pure-Python parts of this repo
 (config derivation, variable layout, transfer logic) import fine on a laptop
@@ -15,73 +14,151 @@ from __future__ import annotations
 
 import importlib
 import os
+from types import ModuleType
+from typing import Any
 
 
-def _imp(module_suffix: str):
-    """Import ``beast.<suffix>`` falling back to ``gb.<suffix>``."""
-    for root in ("beast", "gb"):
-        try:
-            return importlib.import_module(f"{root}.{module_suffix}")
-        except ModuleNotFoundError as e:
-            # only swallow "no top-level package" misses, not real errors inside
-            if e.name not in ("beast", "gb"):
-                raise
-            last = e
-    raise ModuleNotFoundError(
-        f"Could not import '{module_suffix}' from either 'beast' or 'gb'. "
-        f"Install beast (pip install -e .) in your beast checkout."
-    ) from last
+def _imp(module_suffix: str) -> ModuleType:
+    """Import a submodule of the ``beast`` package.
+
+    Parameters
+    ----------
+    module_suffix : str
+        Dotted path relative to the ``beast`` package, e.g. ``"data.dataloader"``.
+
+    Returns
+    -------
+    ModuleType
+        The imported ``beast.<module_suffix>`` module.
+
+    Raises
+    ------
+    ModuleNotFoundError
+        If the top-level ``beast`` package is not importable (i.e. not
+        installed). Errors raised *inside* a found module are propagated
+        unchanged.
+    """
+    try:
+        return importlib.import_module(f"beast.{module_suffix}")
+    except ModuleNotFoundError as err:
+        if err.name != "beast":
+            raise  # a real import error inside beast, not a missing-package miss
+        raise ModuleNotFoundError(
+            f"Could not import 'beast.{module_suffix}'. Install beast "
+            "(pip install -e .) in your beast checkout, plus its jigsaw submodule."
+        ) from err
 
 
 # --- model / wrappers --------------------------------------------------------
-def get_model_class():
-    """Return the unified ``Beast`` model class.
+def get_model_class() -> type:
+    """Return the unified ``beast.model.Beast`` model class.
 
     The old ``Bellbeast`` / ``TinyBellbeast`` split is gone after the model
-    refactor — a single ``beast.model.Beast`` now handles both the single-GPU and
-    domain-parallel cases (process groups of size 1 vs >1). Built via its keyword
-    -only constructor in train.build_model (a config-driven factory
-    ``beast.model.get_model`` also exists if you'd rather use named presets).
+    refactor: a single ``Beast`` now handles both the single-GPU and
+    domain-parallel cases (process groups of size 1 vs >1). It is built via its
+    keyword-only constructor in :func:`era5_levels.train.build_model` (a
+    config-driven factory ``beast.model.get_model`` also exists if you'd rather
+    use named presets).
+
+    Returns
+    -------
+    type
+        The ``beast.model.Beast`` class.
     """
     return _imp("model").Beast
 
 
-def get_expert_class():
-    # Relocated by the refactor: beast.model.expert -> beast.layers.expert.
+def get_expert_class() -> type:
+    """Return the ``beast.layers.expert.Expert`` wrapper class.
+
+    Returns
+    -------
+    type
+        The ``Expert`` class (relocated by the refactor from
+        ``beast.model.expert`` to ``beast.layers.expert``).
+    """
     return _imp("layers.expert").Expert
 
 
 # --- distributed comm --------------------------------------------------------
-def get_comm():
-    """Return (create_process_mesh_dict, get_process_group)."""
+def get_comm() -> tuple[Any, Any]:
+    """Return beast's process-mesh helpers.
+
+    Returns
+    -------
+    tuple of callable
+        ``(create_process_mesh_dict, get_process_group)`` from ``beast.comm``.
+    """
     c = _imp("comm")
     return c.create_process_mesh_dict, c.get_process_group
 
 
-def get_process_group(name: str):
+def get_process_group(name: str) -> Any:
+    """Return a previously created process group by name.
+
+    Parameters
+    ----------
+    name : str
+        Logical group name, e.g. ``"JChannel"``, ``"JSpatial"``, ``"DDP"``.
+
+    Returns
+    -------
+    torch.distributed.ProcessGroup
+        The requested process group.
+    """
     _, gpg = get_comm()
     return gpg(name)
 
 
 # --- data --------------------------------------------------------------------
-def get_dataloader_fn():
+def get_dataloader_fn() -> Any:
+    """Return ``beast.data.dataloader.get_dataloader``.
+
+    Returns
+    -------
+    callable
+        The dataloader factory used by the training loop.
+    """
     return _imp("data.dataloader").get_dataloader
 
 
 # --- utils we reuse ----------------------------------------------------------
-def get_utils():
+def get_utils() -> ModuleType:
+    """Return the ``beast.utils`` module (seeding, dtype, spatial weights).
+
+    Returns
+    -------
+    ModuleType
+        The ``beast.utils`` module.
+    """
     return _imp("utils")
 
 
 # --- distributed bootstrap ---------------------------------------------------
-def bootstrap_distributed(mesh_dims):
-    """Initialise torch.distributed from the SLURM/env vars, pin the GPU, and
-    build beast's process-mesh dictionary.
+def bootstrap_distributed(mesh_dims: list[int]) -> tuple[dict, int, int, int]:
+    """Initialise ``torch.distributed``, pin the GPU, and build the process mesh.
 
-    beast.comm.create_process_mesh_dict requires torch.distributed to already be
-    initialised (it raises otherwise), so we do that here from the standard
-    launch-environment variables. Works under `srun` (SLURM_* vars) and under
-    `torchrun` (RANK/WORLD_SIZE/LOCAL_RANK).
+    ``beast.comm.create_process_mesh_dict`` requires ``torch.distributed`` to be
+    already initialised (it raises otherwise), so this initialises it from the
+    standard launch-environment variables. Works under ``srun`` (``SLURM_*``
+    vars) and under ``torchrun`` (``RANK`` / ``WORLD_SIZE`` / ``LOCAL_RANK``).
+
+    Parameters
+    ----------
+    mesh_dims : list of int
+        The five mesh dimensions ``[experts, dp, up, jspatial, jchannel]``; the
+        product must equal the world size.
+
+    Returns
+    -------
+    pg_dict : dict
+        Mapping of logical group name to ``torch.distributed.ProcessGroup``.
+    rank : int
+        Global rank of this process.
+    world : int
+        Total number of processes (world size).
+    local_rank : int
+        Node-local rank, used to pin the CUDA device.
     """
     import torch
     import torch.distributed as dist
