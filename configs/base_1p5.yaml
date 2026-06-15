@@ -38,12 +38,14 @@ model:
     embedding_dimension: 512                 # cheap grid -> can afford depth/width
     patch_size: 2                            # 120x240 -> 60x120 latent
     n_attn_heads: [8, 16, 8]
-    n_attn_blocks: [2, 2, 2]                 # deeper than 0.25deg (grid is cheap) -> more skill
-    # Windows for jspatial=2, patch=2, width=240:
-    #   window_outer[1] divides 240/(2*2)   = 60   (12 -> 5)
-    #   window_inner[1] divides 240/(2*2*2) = 30   ( 6 -> 5)
-    window_size_outer: [6, 12]
-    window_size_inner: [6, 6]
+    n_attn_blocks: [2, 3, 2]                 # tiny_bellbeast-shaped depth (extra bottleneck block)
+    # Windows for jspatial=2, patch=2 (120x240 grid). Divisibility (both dims):
+    #   outer[0]|60, outer[1]|60   (height 120/2, width 240/(2*2))
+    #   inner[0]|30, inner[1]|30   (one more downsample)
+    # Bumped to ~tiny_bellbeast receptive field (≈5x window area); attention is a
+    # small fraction of the d^2-dominated cost, so this is ~+10% compute, not more.
+    window_size_outer: [12, 30]
+    window_size_inner: [10, 15]
     noise_dim: 32
     nice_norm: False
     latent_rollout: 1
@@ -56,7 +58,7 @@ training:
     # TUNE after the first epoch: read the "epoch 0: ... (Y min)" line and set
     # n_epochs ~= floor(40h / Y). Keep it IDENTICAL for 13 and 37 (the cosine LR
     # is sized to this number, and equal epochs = equal, fair budget).
-    n_epochs: 6                              # starting guess; adjust to fit ~40h
+    n_epochs: 7                              # moderate overestimate to fill ~48h; cosine LR sized to this
     batch_size: 1
     lr_scheduler: True
     low_lr: 0.00001
