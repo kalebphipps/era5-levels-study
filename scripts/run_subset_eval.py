@@ -51,7 +51,7 @@ def run_distributed(args):
     """
     import torch.distributed as dist
 
-    from era5_levels import beast_api
+    from era5_levels import beast_api, checkpoint
     from era5_levels.config import finalize_config, load_config
     from era5_levels.evaluate import validate_per_level
     from era5_levels.train import build_model
@@ -71,8 +71,10 @@ def run_distributed(args):
     model = build_model(cfg, device, dtype, groups)
     model = Expert(model, groups["Expert"])
 
-    # load this rank's checkpoint shard (beast saves per ep/jchannel rank)
-    state = utils.load_latest_model_states(args.results_dir)[0]
+    # load this rank's checkpoint shard (saved per ep/jchannel rank). Use the
+    # vendored helper — beast.utils no longer provides load_latest_model_states
+    # (the sharded save/resume helpers live in era5_levels.checkpoint).
+    state = checkpoint.load_latest_model_states(args.results_dir)[0]
     # strip a possible DDP "module." prefix
     state = {k[7:] if k.startswith("module.") else k: v for k, v in state.items()}
     model.load_state_dict(state, strict=False)
