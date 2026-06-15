@@ -83,8 +83,14 @@ def run_distributed(args):
                               groups["DP"].rank(), groups["DP"].size(),
                               mode="validation", dtype=dtype)
 
-    # per-variable std (physical units) if available on the dataset
+    # per-variable std (physical units) if available on the dataset. The
+    # dataloader's dataset may be wrapped in a torch Subset (valid_subset > 0),
+    # which hides norm_values — unwrap nested .dataset attrs until we reach the
+    # underlying ERA5 dataset that carries them. Lets physical-unit RMSE work
+    # when scoring a checkpoint on a subset (e.g. a mid-training spot check).
     ds = getattr(valid_dl, "dataset", None)
+    while ds is not None and not hasattr(ds, "norm_values"):
+        ds = getattr(ds, "dataset", None)
     data_std = getattr(ds, "norm_values", {}).get("std") if ds is not None else None
 
     names, rmse = validate_per_level(
