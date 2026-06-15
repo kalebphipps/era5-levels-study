@@ -39,13 +39,16 @@ model:
     patch_size: 2                            # 120x240 -> 60x120 latent
     n_attn_heads: [8, 16, 8]
     n_attn_blocks: [2, 3, 2]                 # tiny_bellbeast-shaped depth (extra bottleneck block)
-    # Windows for jspatial=2, patch=2 (120x240 grid). Divisibility (both dims):
-    #   outer[0]|60, outer[1]|60   (height 120/2, width 240/(2*2))
-    #   inner[0]|30, inner[1]|30   (one more downsample)
-    # Bumped to ~tiny_bellbeast receptive field (≈5x window area); attention is a
-    # small fraction of the d^2-dominated cost, so this is ~+10% compute, not more.
+    # Window constraints (jspatial=2, patch=2, 120x240). beast asserts:
+    #   - ALL four dims must be EVEN.
+    #   - width dims: outer[1] | 60 (=240/(jspatial*patch)),
+    #                 inner[1] | 30 (=240/(jspatial*2*patch)).
+    #   - height dims must divide the latent (60 outer / 30 inner) to tile.
+    # So inner[1] must be an EVEN divisor of 30 -> {2,6,10,30} (15 is invalid!).
+    # Bumped from [6,12]/[6,6] toward tiny_bellbeast's receptive field; attention
+    # is a small fraction of the d^2-dominated cost, so ~+10% compute, not more.
     window_size_outer: [12, 30]
-    window_size_inner: [10, 15]
+    window_size_inner: [10, 10]
     noise_dim: 32
     nice_norm: False
     latent_rollout: 1
