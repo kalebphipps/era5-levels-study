@@ -55,7 +55,7 @@ era5_levels/
   checkpoint.py        # vendored sharded save/resume (the beast checkpoint fns moved to an unmerged PR)
   losses.py            # latitude-weighted MSE (deterministic loss)
   train.py             # deterministic training loop (adapted from BellBeast, beast APIs)
-  evaluate.py          # DISTRIBUTED per-variable RMSE (shard-local + JSpatial/JChannel reductions) + subset indexing
+  evaluate.py          # DISTRIBUTED per-variable RMSE — orchestrates beast.evaluation across the mesh (+ baselines/CSV/maps)
   transfer.py          # frozen-core transfer (freeze all but patch_embedding/recovery)
   main.py              # entrypoint: bootstrap dist+mesh -> training_loop
 configs/
@@ -191,8 +191,12 @@ This repo intentionally does **not** vendor or modify beast's model/dataloader �
 those come from your `pip install -e` checkout, so beast fixes flow in for free.
 The one exception is `checkpoint.py` (vendored, see its module docstring) because
 the sharded save/resume helpers were dropped from `beast.utils` in the refactor.
-For evaluation we use the small local `evaluate.py`; adopt `beast.evaluation`
-once that subpackage stabilises.
+Evaluation metrics come from **`beast.evaluation`** (the house-standard, tested,
+sharding-aware `mse`/`rmse`/`latitude_weighted_average`/`select_variables`/
+`make_variable_names`/`gather_along_dimension`); `evaluate.py` only orchestrates
+them across the mesh and adds the study-specific bits (persistence/climatology
+baselines, CSV logging, map dumps). Note this uses beast's cos-latitude weighting
+convention, which differs slightly from the training loss's `get_spatial_weights`.
 
 ### Resolution: 0.25° vs 1.5°
 

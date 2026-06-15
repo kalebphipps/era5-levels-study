@@ -122,6 +122,23 @@ def get_dataloader_fn() -> Any:
     return _imp("data.dataloader").get_dataloader
 
 
+# --- evaluation --------------------------------------------------------------
+def get_evaluation() -> ModuleType:
+    """Return beast's ``evaluation`` subpackage.
+
+    Exposes the house-standard, tested, sharding-aware metric helpers
+    (``mse``, ``rmse``, ``latitude_weighted_average``, ``select_variables``,
+    ``make_variable_names``, ``gather_along_dimension``) that the study's
+    ``evaluate`` module orchestrates rather than reimplementing.
+
+    Returns
+    -------
+    ModuleType
+        The ``beast.evaluation`` package.
+    """
+    return _imp("evaluation")
+
+
 # --- utils we reuse ----------------------------------------------------------
 def get_utils() -> ModuleType:
     """Return the ``beast.utils`` module (seeding, dtype, spatial weights).
