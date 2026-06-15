@@ -156,7 +156,12 @@ def training_loop(cfg):
     optimizer = torch.optim.AdamW(
         [{"params": low, "lr": cfg["training"]["low_lr"]},
          {"params": normal, "lr": cfg["training"]["normal_lr"]}],
-        betas=(0.9, 0.9), eps=1e-6, weight_decay=0,
+        # beta2=0.95 (was 0.9): a longer second-moment memory keeps the AdamW
+        # denominator stable. beta2=0.9 lets sqrt(v) collapse after a quiet
+        # stretch, so one larger gradient produces a huge update -> NaN (the
+        # "smooth then sudden cliff" we saw). 0.95 keeps responsiveness; use
+        # 0.999 for maximum stability if it recurs.
+        betas=(0.9, 0.95), eps=1e-6, weight_decay=0,
     )
     scheduler = (torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=cfg["training"]["n_epochs"], eta_min=1e-5)
@@ -276,6 +281,8 @@ def train_one_epoch(cfg, epoch, dl, model, optimizer, loss_fn, sqrt_w, device,
     if hasattr(dl, "sampler") and hasattr(dl.sampler, "set_epoch"):
         dl.sampler.set_epoch(epoch)
 
+    skipped = 0
+    consecutive_skips = 0
     for i, batch in enumerate(dl):
         x, y = batch[0].to(device), batch[1].to(device)
         optimizer.zero_grad(set_to_none=True)
@@ -283,7 +290,33 @@ def train_one_epoch(cfg, epoch, dl, model, optimizer, loss_fn, sqrt_w, device,
             pred = model(x)
             loss = loss_fn(pred, y, sqrt_w)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+
+        # Synchronized non-finite guard: forward/backward (with their collectives)
+        # always run on every rank, so the model shards/replicas stay in lockstep.
+        # Only the optimizer step is conditional, and the decision is all_reduced
+        # so ALL ranks agree -- if any rank's loss/grad is non-finite, everyone
+        # skips the step (weights keep their last good values). One bad batch then
+        # can't poison the weights and kill a 48h run; persistent divergence still
+        # aborts loudly.
+        finite = bool(torch.isfinite(loss).all()) and bool(torch.isfinite(grad_norm).all())
+        bad = torch.tensor(0.0 if finite else 1.0, device=device)
+        dist.all_reduce(bad, op=dist.ReduceOp.MAX)
+        if bad.item() > 0:
+            optimizer.zero_grad(set_to_none=True)
+            skipped += 1
+            consecutive_skips += 1
+            if dist.get_rank() == 0:
+                print(f"  [nan-guard] non-finite loss/grad at step {i}; skipped "
+                      f"(total {skipped} this epoch)")
+            if consecutive_skips >= 50:
+                raise RuntimeError(
+                    f"Training diverged: {consecutive_skips} consecutive non-finite "
+                    "steps. Lower normal_lr or raise beta2 (e.g. 0.999)."
+                )
+            continue
+        consecutive_skips = 0
+
         optimizer.step()
         loss_sum += loss.detach()
         if ckpt_every and i % ckpt_every == 0:
