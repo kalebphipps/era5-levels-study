@@ -1,36 +1,42 @@
 """Distributed evaluation for the levels study.
 
-IMPORTANT: under jigsaw the model and data are sharded across GPUs — channels
-across the ``JChannel`` group and longitude across the ``JSpatial`` group — so
-the full (B, C, lat, lon) field never exists on one rank and CANNOT be gathered
-onto a single GPU. Evaluation therefore runs *inside the same process mesh* as
-training: each rank computes metrics on its local shard, and we reduce:
+This module is a **thin orchestrator over ``beast.evaluation``** — it does NOT
+reimplement metrics. The house-standard, tested, sharding-aware primitives are
+reused via :func:`era5_levels.beast_api.get_evaluation`:
 
-  * area-weighted spatial means  ->  all_reduce(SUM) over JSpatial  (longitude shards)
-  * per-variable assembly        ->  all_gather over JChannel        (channel shards)
+  * ``metrics.mse``               — per-element squared error, reduced over batch
+  * ``utils.latitude_weighted_average`` — cos-latitude weighted spatial mean
+  * ``utils.select_variables``    — shard-aware selection of evaluation variables
+  * ``utils.make_variable_names`` — the canonical variable-name ordering
+  * ``comm.gather_along_dimension`` — channel gather (handles unequal shards)
+  * ``derived_metrics.rmse``      — sqrt(MSE)
 
-This mirrors beast's own reductions. Prefer ``beast.evaluation`` once that
-subpackage stabilises; this is the small, study-local version so the poster
-isn't blocked on it.
+Under jigsaw the model and data are sharded across GPUs — channels across the
+``JChannel`` group and longitude across the ``JSpatial`` group — so the full
+(B, C, lat, lon) field never exists on one rank. Evaluation therefore runs
+*inside the same process mesh* as training. The mesh reductions are:
+
+  * spatial mean   -> ``latitude_weighted_average`` per rank, then averaged over
+    ``JSpatial`` (the longitude shards are equal-sized, so a mean of per-shard
+    means equals the global lat-weighted mean);
+  * per-variable assembly -> ``gather_along_dimension`` over ``JChannel`` (with
+    ``variable_size=True``, since selecting a level subset leaves unequal shards).
 
 Latitude is NOT sharded (only longitude is), so the cos-latitude weights are the
 full-height vector and identical on every rank.
 
-What's here:
-  - per-variable RMSE of the model (`validate_per_level` / `evaluate_all`);
-  - cheap baselines for context on the plots — **persistence** and a self-
-    computed **climatology** (no external files needed);
-  - per-epoch metric logging to CSV (rank 0) so all the curves/heatmaps can be
-    drawn offline;
-  - a sample-field map dump (gather one variable's lat/lon field over JSpatial)
-    for the poster's forecast/error maps.
+What is genuinely study-specific (and therefore still lives here, layered on top
+of the beast primitives):
 
-NOTE: like everything beast-touching in this repo, the distributed paths here are
-untested off-cluster. Two layout assumptions are flagged inline and must be
-confirmed on the first real run: (a) channels are split contiguously by JChannel
-rank in `build_ordered_variables` order; (b) the dataloader lays the input out as
-[timestep-0 vars, timestep-1 vars, ..., constant masks], all channel-sharded the
-same way as the output.
+  - **persistence** and a self-computed in-sample **climatology** baseline;
+  - per-epoch metric logging to CSV (rank 0) for the offline curves/heatmaps;
+  - a sample-field map dump for the poster's forecast/error maps.
+
+NOTE: the distributed paths here are untested off-cluster. Two layout assumptions
+are flagged inline and must be confirmed on the first real run: (a) channels are
+split contiguously by JChannel rank in ``make_variable_names`` order; (b) the
+dataloader lays the input out as [timestep-0 vars, timestep-1 vars, ..., constant
+masks], all channel-sharded the same way as the output.
 """
 
 from __future__ import annotations
@@ -42,122 +48,85 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
-from .variable_layout import build_ordered_variables
+from . import beast_api
+from .variable_layout import (
+    PRESSURE_VARIABLES,
+    SURFACE_VARIABLES,
+    build_ordered_variables,
+)
 
 
-def latitude_weights(n_lat: int, device=None) -> torch.Tensor:
-    """Build cos(latitude) area weights normalised to mean 1.
+def _global_lat_weighted_mean(ev, se_field: torch.Tensor, spatial_group) -> torch.Tensor:
+    """Latitude-weighted spatial mean of a local field, reduced across JSpatial.
 
-    Parameters
-    ----------
-    n_lat : int
-        Number of latitude rows (full height; latitude is never sharded).
-    device : torch.device, optional
-        Device for the returned tensor.
-
-    Returns
-    -------
-    torch.Tensor
-        Weights of shape ``(1, 1, n_lat, 1)``, broadcastable over
-        ``(B, C, lat, lon)``.
-    """
-    lat = torch.linspace(np.pi / 2, -np.pi / 2, n_lat, device=device)
-    w = torch.cos(lat)
-    w = w * n_lat / w.sum()
-    return w.view(1, 1, n_lat, 1)
-
-
-def reduce_spatial_mean(local_field: torch.Tensor, weights: torch.Tensor,
-                        spatial_group) -> torch.Tensor:
-    """Compute an area-weighted spatial mean, reduced across JSpatial.
-
-    The mean is taken over ``(batch, lat, local-lon)`` and summed across the
-    longitude shards, giving one value per *local* channel. Identical reduction
-    to beast's own.
+    Uses ``beast.evaluation.latitude_weighted_average`` for the (house-standard)
+    weighting, then averages the per-rank means over the longitude shards. The
+    shards are equal-sized, so the mean of per-shard means is the global
+    lat-weighted mean.
 
     Parameters
     ----------
-    local_field : torch.Tensor
-        Local shard of shape ``(B, C_local, lat, lon_local)`` (e.g. squared
-        error).
-    weights : torch.Tensor
-        Latitude weights of shape ``(1, 1, lat, 1)``.
-    spatial_group : torch.distributed.ProcessGroup
-        The ``JSpatial`` group over which the longitude shards are reduced.
-
-    Returns
-    -------
-    torch.Tensor
-        Area-weighted mean per local channel, shape ``(C_local,)``.
-    """
-    local_sum = (local_field * weights).sum(dim=(0, 2, 3))            # (C_local,)
-    weight_map = torch.ones_like(local_field[0, 0]) * weights[0, 0]   # (lat, lon_local)
-    local_w = weight_map.sum() * local_field.shape[0]
-    if dist.is_initialized() and dist.get_world_size(spatial_group) > 1:
-        dist.all_reduce(local_sum, op=dist.ReduceOp.SUM, group=spatial_group)
-        dist.all_reduce(local_w, op=dist.ReduceOp.SUM, group=spatial_group)
-    return local_sum / local_w
-
-
-def gather_channels(local_vec: torch.Tensor, channel_group) -> torch.Tensor:
-    """Assemble a global per-variable vector from local channel shards.
-
-    Concatenates in JChannel-rank order, which matches the contiguous channel
-    split (rank ``r`` owns global channels ``[r*chunk, (r+1)*chunk)``) and
-    therefore the :func:`build_ordered_variables` order.
-
-    Parameters
-    ----------
-    local_vec : torch.Tensor
-        This rank's per-local-channel vector, shape ``(C_local,)``.
-    channel_group : torch.distributed.ProcessGroup
-        The ``JChannel`` group across which channels are sharded.
-
-    Returns
-    -------
-    torch.Tensor
-        The assembled global vector, shape ``(C_global,)`` (returns the input
-        unchanged for a 1-process group).
-    """
-    if not dist.is_initialized() or dist.get_world_size(channel_group) <= 1:
-        return local_vec
-    parts = [torch.empty_like(local_vec) for _ in range(dist.get_world_size(channel_group))]
-    dist.all_gather(parts, local_vec.contiguous(), group=channel_group)
-    return torch.cat(parts, dim=0)
-
-
-def gather_spatial_field(field: torch.Tensor, spatial_group) -> torch.Tensor:
-    """Gather a ``(lat, lon_local)`` field into the full ``(lat, lon)`` grid.
-
-    Used for sample-map dumps. Concatenates along the longitude (last) axis in
-    JSpatial-rank order.
-
-    Parameters
-    ----------
-    field : torch.Tensor
-        This rank's local field, shape ``(lat, lon_local)``.
+    ev : module
+        The ``beast.evaluation`` package.
+    se_field : torch.Tensor
+        Local per-channel field, shape ``(C_local, lat, lon_local)`` (e.g. the
+        batch-mean squared error).
     spatial_group : torch.distributed.ProcessGroup
         The ``JSpatial`` group across which longitude is sharded.
 
     Returns
     -------
     torch.Tensor
-        The full field, shape ``(lat, lon)`` (returns the input unchanged for a
-        1-process group).
+        Global lat-weighted mean per local channel, shape ``(C_local,)``.
     """
-    if not dist.is_initialized() or dist.get_world_size(spatial_group) <= 1:
-        return field
-    parts = [torch.empty_like(field) for _ in range(dist.get_world_size(spatial_group))]
-    dist.all_gather(parts, field.contiguous(), group=spatial_group)
-    return torch.cat(parts, dim=-1)
+    local = ev.latitude_weighted_average(se_field, lat_dim=-2, lon_dim=-1)
+    if dist.is_initialized() and dist.get_world_size(spatial_group) > 1:
+        dist.all_reduce(local, op=dist.ReduceOp.SUM, group=spatial_group)
+        local = local / dist.get_world_size(spatial_group)
+    return local
+
+
+def _std_for_names(ev, names: list[str], levels_full, data_std, device) -> torch.Tensor:
+    """Select the per-channel std for ``names`` from a full-layout std array.
+
+    ``data_std`` is indexed by the full (global) channel layout; the result is
+    reordered/subset to match ``names`` (the evaluation order).
+
+    Parameters
+    ----------
+    ev : module
+        The ``beast.evaluation`` package.
+    names : list of str
+        Evaluation variable names (result order).
+    levels_full : list of int or str
+        The full level set defining the global channel layout.
+    data_std : array-like
+        Per-global-channel standard deviation.
+    device : torch.device
+        Device for the returned tensor.
+
+    Returns
+    -------
+    torch.Tensor
+        Std values aligned with ``names``, shape ``(len(names),)``.
+    """
+    full_names = ev.make_variable_names(
+        all_surface_variables=SURFACE_VARIABLES,
+        all_pressure_variables=PRESSURE_VARIABLES,
+        all_pressure_levels=list(levels_full),
+    )
+    pos = {n: i for i, n in enumerate(full_names)}
+    std = torch.as_tensor(data_std, dtype=torch.float32)
+    return torch.tensor([float(std[pos[n]]) for n in names], device=device)
 
 
 def subset_indices(levels_full, levels_subset) -> torch.Tensor:
     """Find the global channel indices of a level subset within a full layout.
 
-    Pure index bookkeeping (no tensors/sharding) — used to pick the 13 standard
-    levels out of the assembled 37-level vectors. Surface variables are always
-    included.
+    Pure index bookkeeping (no tensors/sharding/beast) — kept for the off-cluster
+    ``--check-indices`` sanity check. The distributed metric path does NOT use
+    this; it uses ``beast.evaluation.select_variables`` instead. Surface
+    variables are always included.
 
     Parameters
     ----------
@@ -255,6 +224,12 @@ def evaluate_all(model, dataloader, levels_full, groups, device, *,
                  subset_levels=None, data_std=None) -> tuple[list[str], dict]:
     """Compute distributed per-variable RMSE for the model (+ optional baselines).
 
+    Built on ``beast.evaluation``: per batch the squared error is reduced to a
+    per-channel lat-weighted mean (``mse`` + ``latitude_weighted_average``,
+    reduced over ``JSpatial``); the accumulated MSE is then sharded-selected
+    (``select_variables``), gathered over ``JChannel`` (``gather_along_dimension``,
+    ``variable_size=True``) and square-rooted (``rmse``).
+
     RMSE is in normalised units unless ``data_std`` (per global channel) is
     given, in which case it is rescaled to physical units. If ``subset_levels``
     is set (e.g. the 13 standard levels), the names/vectors are restricted to
@@ -291,40 +266,59 @@ def evaluate_all(model, dataloader, levels_full, groups, device, *,
         Mapping of metric name (``"model"``, and ``"persistence"`` /
         ``"climatology"`` if ``baselines``) to its per-variable RMSE tensor.
     """
+    ev = beast_api.get_evaluation()
     spatial_group, channel_group = groups["JSpatial"], groups["JChannel"]
+    eval_levels = list(subset_levels) if subset_levels is not None else list(levels_full)
+
+    # Shared variable/level description of the channel layout (surface + pressure
+    # variables are always all kept; only the level set is subset).
+    layout_kw = dict(
+        all_surface_variables=SURFACE_VARIABLES,
+        all_pressure_variables=PRESSURE_VARIABLES,
+        all_pressure_levels=list(levels_full),
+        eval_pressure_levels=eval_levels,
+    )
+    names = ev.make_variable_names(**layout_kw)
+
     clim = _accumulate_climatology(dataloader, device) if baselines else None
 
     model.eval()
     keys = ["model"] + (["persistence", "climatology"] if baselines else [])
-    weights = None
-    acc = {k: None for k in keys}
+    acc: dict = {k: None for k in keys}
     n_batches = 0
     for batch in dataloader:
         x, y = batch[0].to(device), batch[1].to(device)
         pred = model(x)
-        if weights is None:
-            weights = latitude_weights(pred.shape[-2], device=pred.device)
-            acc = {k: torch.zeros(pred.shape[1], device=pred.device) for k in keys}
-        acc["model"] += reduce_spatial_mean((pred - y) ** 2, weights, spatial_group)
+        fields = {"model": pred}
         if baselines:
-            persist = persistence_prediction(x, n_in_timesteps, y.shape[1])
-            acc["persistence"] += reduce_spatial_mean((persist - y) ** 2, weights, spatial_group)
-            acc["climatology"] += reduce_spatial_mean((clim.unsqueeze(0) - y) ** 2, weights, spatial_group)
+            fields["persistence"] = persistence_prediction(x, n_in_timesteps, y.shape[1])
+            fields["climatology"] = clim.unsqueeze(0).expand_as(y)
+        for k in keys:
+            # mse -> (C_local, lat, lon_local), then global lat-weighted mean.
+            se = ev.mse(fields[k], y, batch_dimension=0)
+            chan_mse = _global_lat_weighted_mean(ev, se, spatial_group)
+            acc[k] = chan_mse if acc[k] is None else acc[k] + chan_mse
         n_batches += 1
 
-    names = build_ordered_variables(levels_full)
-    idx = (subset_indices(levels_full, subset_levels) if subset_levels is not None
-           else None)
     result = {}
     for k in keys:
-        rmse = gather_channels(torch.sqrt(acc[k] / max(1, n_batches)), channel_group)
+        local_mse = acc[k] / max(1, n_batches)                      # (C_local,)
+        # Shard-aware selection of the evaluation variables (local indices), then
+        # gather across channel shards (variable_size: a level subset leaves
+        # unequal per-rank counts).
+        local_sel = ev.select_variables(
+            local_mse, dim=0,
+            channel_rank=channel_group.rank(),
+            channel_group_size=channel_group.size(),
+            **layout_kw,
+        )
+        global_mse = ev.gather_along_dimension(
+            local_sel, group=channel_group, dim=0, variable_size=True
+        )
+        rmse = ev.rmse({"mse": global_mse})
         if data_std is not None:
-            rmse = rmse * torch.as_tensor(data_std, device=rmse.device)
-        if idx is not None:
-            rmse = rmse[idx.to(rmse.device)]
+            rmse = rmse * _std_for_names(ev, names, levels_full, data_std, rmse.device)
         result[k] = rmse
-    if idx is not None:
-        names = [names[i] for i in idx.tolist()]
     return names, result
 
 
@@ -398,7 +392,8 @@ def dump_sample_maps(model, dataloader, levels_full, groups, device,
 
     Runs one forward on the first validation batch, then for each requested
     variable finds which JChannel rank owns that channel, gathers its
-    ``(lat, lon_local)`` field into the full grid over JSpatial, and writes
+    ``(lat, lon_local)`` field into the full grid over JSpatial (via
+    ``beast.evaluation.gather_along_dimension``), and writes
     ``<var>_{pred,true,err}.npy`` (from the JSpatial-rank-0 of the owning channel
     shard). Feed these to matplotlib offline for the poster maps.
 
@@ -420,6 +415,7 @@ def dump_sample_maps(model, dataloader, levels_full, groups, device,
     out_dir : str
         Output directory for the ``.npy`` dumps.
     """
+    ev = beast_api.get_evaluation()
     channel_group, spatial_group = groups["JChannel"], groups["JSpatial"]
     full_names = build_ordered_variables(levels_full)
 
@@ -436,8 +432,9 @@ def dump_sample_maps(model, dataloader, levels_full, groups, device,
         owner, local = g // chunk, g % chunk
         if channel_group.rank() != owner:
             continue
-        full_pred = gather_spatial_field(pred[0, local], spatial_group)  # (lat, lon)
-        full_true = gather_spatial_field(y[0, local], spatial_group)
+        # gather the (lat, lon_local) field into the full (lat, lon) over JSpatial
+        full_pred = ev.gather_along_dimension(pred[0, local], group=spatial_group, dim=-1)
+        full_true = ev.gather_along_dimension(y[0, local], group=spatial_group, dim=-1)
         if dist.get_world_size(spatial_group) <= 1 or spatial_group.rank() == 0:
             os.makedirs(out_dir, exist_ok=True)
             p, t = full_pred.float().cpu().numpy(), full_true.float().cpu().numpy()
