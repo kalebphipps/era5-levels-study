@@ -57,7 +57,10 @@ def finalize_config(cfg: dict) -> dict:
         print(f"[config] overriding data.n_variables "
               f"({data.get('n_variables')}) -> {n_vars} (from pressure_levels)")
     data["n_variables"] = n_vars
-    model["n_output_channels"] = n_vars
+    # Output channels = predicted variables x output timesteps (the dataset
+    # concatenates target timesteps along the channel axis).
+    n_out = data.get("n_out_timesteps", 1)
+    model["n_output_channels"] = n_out * n_vars
 
     # constant masks: padded to an even count when model-parallel (matches the
     # dataset, which pads so the channel split stays balanced)
