@@ -61,7 +61,7 @@ training:
     # TUNE after the first epoch: read the "epoch 0: ... (Y min)" line and set
     # n_epochs ~= floor(40h / Y). Keep it IDENTICAL for 13 and 37 (the cosine LR
     # is sized to this number, and equal epochs = equal, fair budget).
-    n_epochs: 7                              # moderate overestimate to fill ~48h; cosine LR sized to this
+    n_epochs: 16                             # ~9.5 steps/s probe -> ~2.8h/epoch (dp=2) -> ~16 fit in 48h; cosine LR sized to this
     batch_size: 1
     lr_scheduler: True
     low_lr: 0.00001
