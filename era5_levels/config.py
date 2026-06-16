@@ -1,13 +1,4 @@
-"""Configuration loading + channel derivation for the levels study.
-
-The whole point of the study is that switching 13 ↔ 37 levels is a *one-field*
-change (`data.pressure_levels`). This module derives every channel count from
-that field via `variable_layout.num_variables`, so the two runs share an
-otherwise byte-identical config and the comparison stays fair.
-
-It is deliberately self-contained (does not import beast's own config, which is
-in flux and not level-generalized).
-"""
+"""Config loading to simplify different runs for comparison."""
 
 from __future__ import annotations
 
@@ -19,11 +10,10 @@ from .variable_layout import num_variables
 
 
 def load_config(path: str, overlays: list[str] | None = None) -> dict:
-    """Load a base YAML and apply optional overlay YAMLs (later wins).
+    """Load a base YAML and apply optional overlay YAMLs.
 
-    Overlays let you keep one shared ``base_*.yaml`` and tiny ``levels13.yaml`` /
-    ``levels37.yaml`` files that only set ``data.pressure_levels`` and the data
-    paths.
+    Overlays add on additional configs on overwrite options defined in ``base_*.yaml`` - with multiple overlays the
+    latest overlay always overwrites previous overlays (so order is important).
 
     Parameters
     ----------
@@ -47,14 +37,14 @@ def load_config(path: str, overlays: list[str] | None = None) -> dict:
 
 
 def _deep_update(base: dict, new: dict) -> dict:
-    """Recursively merge ``new`` into ``base`` in place.
+    """Recursively update new configs into base config.
 
     Parameters
     ----------
     base : dict
         Dictionary to update in place.
     new : dict
-        Dictionary whose entries override (or recurse into) ``base``.
+        Dictionary whose entries override ``base``.
 
     Returns
     -------
@@ -70,13 +60,7 @@ def _deep_update(base: dict, new: dict) -> dict:
 
 
 def finalize_config(cfg: dict) -> dict:
-    """Derive channel counts and resolve env-dependent paths/mesh.
-
-    Mirrors the essential parts of beast's ``setup_config_dict``, but drives the
-    channel counts from ``data.pressure_levels`` so switching 13 vs 37 levels is
-    automatic and the rest of the config stays byte-identical between the two
-    runs. Also resolves a single ``-1`` mesh entry from the world size and
-    prepends ``$DATA_DIR`` / ``$WORKDIR`` to relative data paths.
+    """Derive channel count for different pressure levels whilst ensuring the rest of the config remains identical.
 
     Parameters
     ----------
@@ -86,8 +70,7 @@ def finalize_config(cfg: dict) -> dict:
     Returns
     -------
     dict
-        The same dictionary, mutated in place with derived
-        ``n_variables`` / ``n_input_channels`` / ``n_output_channels``, the
+        The same dictionary, with derived ``n_variables`` / ``n_input_channels`` / ``n_output_channels``, the
         resolved mesh, and absolute data paths.
 
     Raises
@@ -97,7 +80,6 @@ def finalize_config(cfg: dict) -> dict:
     """
     data, model = cfg["data"], cfg["model"]
 
-    # --- channel counts from the level set (the fair-comparison knob) --------
     if "pressure_levels" not in data:
         raise KeyError("data.pressure_levels is required (the 13- or 37-level list).")
     n_vars = num_variables(data["pressure_levels"])
@@ -105,13 +87,9 @@ def finalize_config(cfg: dict) -> dict:
         print(f"[config] overriding data.n_variables "
               f"({data.get('n_variables')}) -> {n_vars} (from pressure_levels)")
     data["n_variables"] = n_vars
-    # Output channels = predicted variables x output timesteps (the dataset
-    # concatenates target timesteps along the channel axis).
     n_out = data.get("n_out_timesteps", 1)
     model["n_output_channels"] = n_out * n_vars
 
-    # constant masks: padded to an even count when model-parallel (matches the
-    # dataset, which pads so the channel split stays balanced)
     n_masks = len(data.get("constant_masks", []))
     if cfg.get("jigsaw", {}).get("parallelism", 1) > 1 and n_masks % 2 == 1:
         n_masks += 1
@@ -122,7 +100,6 @@ def finalize_config(cfg: dict) -> dict:
         n_in = data["n_in_timesteps"] = 1
     model["n_input_channels"] = n_in * n_vars + n_masks
 
-    # --- mesh: allow a single -1 entry to be inferred from world size --------
     world = int(os.environ.get("SLURM_NTASKS", os.environ.get("WORLD_SIZE", 1)))
     mesh = cfg.get("mesh_dims")
     if mesh and -1 in mesh:
@@ -132,15 +109,10 @@ def finalize_config(cfg: dict) -> dict:
                 prod *= m
         mesh[mesh.index(-1)] = max(world // prod, 1)
 
-    # --- single data path ----------------------------------------------------
-    # Train and validation read the SAME store (split by time range, not by
-    # path). Configs give one `data_path`; mirror it into the train/valid keys
-    # the dataloader consumes, so this works whether the dataloader reads
-    # `data_path` or the legacy train_data_path / valid_data_path keys.
+    # Beast on cluster still uses multiple data paths, this is redundant.
     if "data_path" in data:
         data["train_data_path"] = data["valid_data_path"] = data["data_path"]
 
-    # --- prepend DATA_DIR to data paths if set -------------------------------
     data_dir = os.environ.get("DATA_DIR")
     if data_dir:
         for key in ("data_path", "train_data_path", "valid_data_path",

@@ -1,17 +1,4 @@
-"""Vendored sharded-checkpoint save/resume.
-
-The beast model refactor removed ``save_checkpoint`` / ``load_latest_model_states``
-/ ``load_state_dict`` from ``beast.utils`` (they now live only in the unmerged
-checkpoint PR, as ``beast.checkpoint``). To avoid taking a dependency on another
-in-flight PR, we vendor a minimal, self-contained version here, modelled on the
-original beast implementation.
-
-Sharding model: each domain-parallel rank owns a slice of the model, so the
-checkpoint is *per shard*. Files are named with the Expert and JChannel ranks,
-and on load each rank picks up the latest file matching its own (ep, jc) ranks.
-Only the DDP-rank-0 of each shard writes, to avoid duplicate writes across data-
-parallel replicas.
-"""
+"""Brief checkpoint before beast checkpoint functionality is implemented."""
 
 from __future__ import annotations
 
@@ -67,7 +54,7 @@ def save_checkpoint(checkpoint_path, model, optimizer, epoch, step, loss) -> Non
 
 
 def _load_one(path, map_location="cpu"):
-    """Load a single checkpoint file into its component tuple.
+    """Load a single checkpoint file.
 
     Parameters
     ----------
@@ -94,12 +81,12 @@ def _load_one(path, map_location="cpu"):
 
 
 def load_latest_model_states(directory):
-    """Return the latest checkpoint tuple for *this rank's* (ep, jc) shard.
+    """Return the latest checkpoint tuple for this rank.
 
     Parameters
     ----------
     directory : str
-        The run directory; checkpoints live in ``<directory>/checkpoints``.
+        The run directory.
 
     Returns
     -------
@@ -137,9 +124,6 @@ def load_latest_model_states(directory):
 
 def load_state_dict(model, optimizer, model_state_dict, optimizer_state_dict, last_epoch):
     """Load weights and optimizer into the (DDP-wrapped) model.
-
-    Best-effort: if the shapes don't match (e.g. a config changed), fall back to
-    a fresh start rather than crashing.
 
     Parameters
     ----------

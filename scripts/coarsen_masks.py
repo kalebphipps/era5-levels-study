@@ -1,18 +1,4 @@
-"""Coarsen 0.25deg constant masks to the SAME 120x240 grid as coarsen_to_1p5.py.
-
-Your pre-made 1.5deg masks (*_121_240.npy) are on the standard 121x240 grid,
-which does NOT match the factor-6 block-mean output (120x240). To keep masks and
-data on an identical grid, block-mean the 0.25deg masks the same way the data is
-coarsened (drop the trailing odd latitude, then average 6x6 blocks).
-
-    python scripts/coarsen_masks.py --factor 6 --out-dir data/constant_masks_1p5 \
-        data/constant_masks/soil_type_normalized.npy \
-        data/constant_masks/topography_normalized.npy \
-        data/constant_masks/land_mask.npy
-
-Output keeps the same filenames, so the model config's `constant_masks` list is
-unchanged; only `constant_masks_path` points at the 1.5deg directory.
-"""
+"""Coarsen 0.25deg constant masks to the same grid as the 1.5 degree data."""
 
 import argparse
 import os
@@ -21,7 +7,7 @@ import numpy as np
 
 
 def coarsen_2d(arr: np.ndarray, factor: int) -> np.ndarray:
-    """Block-mean a 2-D ``(lat, lon)`` array, trimming any remainder.
+    """Coarsen a 2D ``(lat, lon)`` constant mask, trimming any remainder.
 
     Parameters
     ----------
@@ -45,7 +31,7 @@ def coarsen_2d(arr: np.ndarray, factor: int) -> np.ndarray:
 
 
 def main():
-    """Parse CLI args and block-mean each mask to the coarse grid."""
+    """Parse args and coarsen each mask."""
     ap = argparse.ArgumentParser()
     ap.add_argument("masks", nargs="+", help="0.25deg mask .npy files (lat, lon)")
     ap.add_argument("--factor", type=int, default=6)

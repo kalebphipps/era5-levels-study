@@ -1,30 +1,4 @@
-"""Coarsen a 0.25-degree stacked ERA5 zarr to ~1.5 degrees (factor-6 block mean).
-
-RESUMABLE + chainable: writes the output in time-blocks, appending each block.
-If the job dies, just re-run with the SAME arguments — it reads how many
-timesteps are already in the output and continues from there. So you can chain
-it with afterany jobs (slurm/submit_coarsen_chain.sh) until it finishes.
-
-WeatherBench-2's ready-made 1.5deg ERA5 has only 13 pressure levels, so to get
-1.5deg WITH the full 37 levels we coarsen YOUR 0.25deg 37-level zarr. The
-(time, feature, lat, lon) layout and the 228-channel feature order are preserved
-exactly, and 0.25deg + 1.5deg then share identical source data.
-
-    python scripts/coarsen_to_1p5.py --in IN.zarr --out OUT.zarr \
-        --factor 6 --time-range 1990-01-01 2022-12-31 --time-stride 6
-
-0.25deg (721x1440) --factor 6 + boundary="trim"--> 120x240 (the trailing odd
-latitude is dropped, which the dataset would clip anyway). Coarsen the constant
-masks the SAME way with scripts/coarsen_masks.py so they share this 120x240 grid.
-
-Notes
------
-- Streams via dask; reading the 0.25deg input is the cost (~0.95 GB/timestep).
-  Use --time-stride 6 on hourly data (-> 6-hourly, matches dt=6 training).
-- Recompute normalization on the OUTPUT (coarsening shrinks per-feature std).
-- sea_surface_temperature was stored with land=0, so its block mean is slightly
-  biased near coasts. Fine for a poster.
-"""
+"""Coarsen a 0.25-degree stacked ERA5 zarr to ~1.5 degrees."""
 
 import argparse
 import os
@@ -33,7 +7,7 @@ import xarray as xr
 
 
 def main():
-    """Parse CLI args and coarsen the input zarr block-by-block (resumable)."""
+    """Parse args and coarsen the input zarr block-by-block."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="inp", required=True, help="0.25deg 37-level zarr")
     ap.add_argument("--out", required=True, help="output 1.5deg zarr")
@@ -43,8 +17,7 @@ def main():
     ap.add_argument("--var", default="fields")
     ap.add_argument("--time-range", nargs=2, metavar=("START", "END"), default=None)
     ap.add_argument("--time-stride", type=int, default=1,
-                    help="keep every Nth timestep. Hourly source -> 6 gives 6-hourly "
-                         "(matches dt=6) and cuts reads ~6x. Use 1 if already 6-hourly.")
+                    help="keep every Nth timestep.")
     ap.add_argument("--block", type=int, default=48,
                     help="timesteps written per append = checkpoint granularity")
     args = ap.parse_args()
@@ -57,19 +30,16 @@ def main():
     n_total = ds.sizes["time"]
     print(f"input selection: {dict(ds.sizes)}  ({n_total} timesteps)", flush=True)
 
-    # coarse dims (lazy metadata only)
+    # Coarsen dimensions
     meta = ds.isel(time=slice(0, 1)).coarsen(
         {args.lat: args.factor, args.lon: args.factor}, boundary="trim").mean()
     nfeat = meta.sizes["feature"]
     nlat, nlon = meta.sizes[args.lat], meta.sizes[args.lon]
 
-    # how many timesteps already written? -> resume point
+    # Resume point.
     done = 0
     if os.path.exists(args.out):
         try:
-            # consolidated=False: read the store's true current state (a
-            # killed link may not have re-consolidated), and skip the slow
-            # consolidated-metadata fallback warning.
             done = xr.open_zarr(args.out, consolidated=False).sizes["time"]
         except Exception as e:  # noqa: BLE001
             print(f"WARNING: could not read existing output ({e}); starting fresh")
@@ -87,10 +57,6 @@ def main():
         blk = ds.isel(time=slice(start, stop)).coarsen(
             {args.lat: args.factor, args.lon: args.factor}, boundary="trim").mean()
         blk = blk.chunk({"time": 1, "feature": nfeat, args.lat: nlat, args.lon: nlon})
-        # Drop encoding inherited from the source: it carries stale chunk shapes
-        # (the 0.25deg grid) and a numcodecs Blosc compressor that zarr-python 3.x
-        # refuses to write into a v3 array. We write zarr v2 (matching the source)
-        # with fresh chunking -- same approach as era5_parallel_processing.
         for name in blk.variables:
             blk[name].encoding.clear()
         if first:

@@ -1,23 +1,4 @@
-"""Free 13-vs-37 subset evaluation — DISTRIBUTED, run on the cluster.
-
-Because the model + data are sharded across GPUs (jigsaw: channels over JChannel,
-longitude over JSpatial), this cannot run on a single GPU. It launches inside the
-same process mesh as training, rebuilds the (sharded) model, loads the sharded
-checkpoint for each rank, and computes per-variable RMSE reduced across the mesh
-— restricted to the 13 standard levels so a trained 37-level model is scored on
-exactly the variables/levels the 13-level model predicts. No retraining.
-
-Run it like a training job (one task per GPU, same mesh_dims as the run you are
-evaluating):
-
-    srun python -u scripts/run_subset_eval.py \\
-        --config configs/base_0p25.yaml --overlay configs/levels37.yaml \\
-        --results-dir $WS/results/<partition>/<jobid>
-
-Index-only sanity check (pure Python, no GPU/beast — just the channel maths):
-
-    python scripts/run_subset_eval.py --check-indices
-"""
+"""Evaluate on only a subset of the model."""
 
 from __future__ import annotations
 

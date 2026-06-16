@@ -1,6 +1,5 @@
-# 13-level overlay for the 1.5deg study. Apply on top of base_1p5.yaml.
-# n_variables = 6 surface + 6 pressure * 13 = 84 (derived).
+# 13-level overlay for the 1.5deg model.
 data:
     pressure_levels: [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
-    data_path: "/hkfs/work/workspace/scratch/xk5289-level_comparison/data/era5_13level_1p5.zarr"     # 13-level subset (make_level_subset.py); train & valid share it, split by time range
-    normalization_dir: "/hkfs/work/workspace/scratch/xk5289-level_comparison/era5-levels-study/data/normalization/1p5/13"   # 13-level subset norm (make_level_subset.py)
+    data_path: "/hkfs/work/workspace/scratch/xk5289-level_comparison/data/era5_13level_1p5.zarr"
+    normalization_dir: "/hkfs/work/workspace/scratch/xk5289-level_comparison/era5-levels-study/data/normalization/1p5/13"

@@ -1,13 +1,8 @@
-# Tiny single-GPU smoke config to prove the pipeline end-to-end before scaling.
-# Uses the 120x240 grid (-> TinyBellbeast path, no jigsaw parallelism) and the
-# dataloader's built-in dummy-data fallback (random tensors) when the data path
-# does not point at a real zarr, so it runs without real data.
-#
-#   srun -n1 --gres=gpu:1 python -m era5_levels.main --config configs/smoke.yaml
+# Tiny single-GPU smoke config.
 
 data:
     dt: 6
-    data_path: "DUMMY_does_not_exist.zarr"   # -> random dummy data (train & valid share one store)
+    data_path: "DUMMY_does_not_exist.zarr"
     constant_masks_path: "constant_masks"
     constant_masks: []
     normalization_dir: "DUMMY"
@@ -18,12 +13,12 @@ data:
     dataset_subsampling: 1
     target_subsampling: 6
     prefetch_factor: 2
-    num_workers: 2          # >0 required when prefetch_factor is set
+    num_workers: 2
     xlat: 120
     xlon: 240
     n_in_timesteps: 1
     n_out_timesteps: 1
-    pressure_levels: [1000, 850, 500, 250, 50]     # any subset is fine for a smoke test
+    pressure_levels: [1000, 850, 500, 250, 50]
 
 model:
     embedding_dimension: 64

@@ -1,19 +1,4 @@
-"""Deterministic training loop for the 13-vs-37 level study.
-
-Adapted from the reference (BellBeast) ``training.py`` but:
-  * deterministic only — no Bayesian/VI, no NICE noise, no ensemble samples;
-  * targets beast's current APIs via `beast_api` (get_dataloader positional
-    ranks, comm mesh, 2-arg Expert) instead of BellBeast's signatures;
-  * loss = latitude-weighted MSE (`LatitudeWeightedMSE`);
-  * in-loop validation = scalar weighted-MSE (distributed-safe); per-level RMSE
-    and the free subset-eval are done offline by ``scripts/run_subset_eval.py``;
-  * optional frozen-core transfer (freeze everything but the I/O convs).
-
-This is the boilerplate scaffold: the structure and API calls follow the code
-that exists in beast/BellBeast, but it can only actually run on the cluster with
-beast (+ jigsaw) installed and a process group launched. Treat the first cluster
-run as a debugging pass.
-"""
+"""Training loop using beast."""
 
 from __future__ import annotations
 
@@ -31,21 +16,12 @@ from .transfer import freeze_core, load_core_from_checkpoint
 
 
 def build_model(cfg, device, dtype, groups):
-    """Build the (deterministic) Beast model from the study config.
-
-    Post-refactor there is a single ``Beast`` class (no Tiny/Grand split) with a
-    keyword-only constructor. Only ``patch_embedding`` / ``patch_recovery``
-    depend on the channel count, so keeping every argument below identical across
-    the 13- and 37-level runs (only ``in/out_channels`` differ) is what keeps the
-    comparison fair. Note the constructor uses ``height`` / ``width`` (not
-    xlat/xlon), takes explicit ``stride`` / ``padding`` / ``dilation``, and no
-    longer takes ``ep_group`` / ``parallelism`` / ``flash_attn`` (the Expert
-    wrapper handles ``ep_group``).
+    """Build the Beast model from the config.
 
     Parameters
     ----------
     cfg : dict
-        The finalized study config (``model`` and ``data`` sections are used).
+        The config.
     device : torch.device
         Device to build the model on.
     dtype : torch.dtype
@@ -89,20 +65,12 @@ def build_model(cfg, device, dtype, groups):
 
 
 def training_loop(cfg):
-    """Run the full deterministic training (and in-loop validation) loop.
-
-    Builds the model and dataloaders, wraps the model in the universal Expert and
-    ``DistributedDataParallel``, optionally loads a frozen transfer core,
-    auto-resumes from any checkpoints already in the run dir, then trains for the
-    configured number of epochs. On each validation pass it writes scalar loss,
-    per-variable RMSE (+ persistence/climatology baselines) to ``metrics.csv``,
-    and optional sample-field maps.
+    """Run the full training loop,
 
     Parameters
     ----------
     cfg : dict
-        The finalized study config. Must include ``run_dir`` (or the environment
-        fallbacks) for checkpoint/metric output.
+        The config.
     """
     _, get_pg = beast_api.get_comm()
     groups = {n: get_pg(n) for n in
@@ -115,7 +83,7 @@ def training_loop(cfg):
     device = torch.device("cuda", torch.cuda.current_device())
     is_root = dist.get_rank() == 0
 
-    # deterministic, per-rank-varied init seed (mirrors reference)
+    # Set seeds
     utils.set_all_seeds(3 + groups["JChannel"].rank()
                         + groups["Expert"].rank() * groups["JChannel"].size())
 
@@ -123,12 +91,10 @@ def training_loop(cfg):
         print("Building model...")
     model = build_model(cfg, device, dtype, groups)
 
-    # universal expert (ep_group size 1 -> all-ones loss weights for ANY channel
-    # count, so 37 levels works without the per-expert hardcoded slicing)
+    # No expert in current config - so this is broken for experts currently.
     model = Expert(model, groups["Expert"])
-    expert_weights = model.get_loss_weights()
 
-    # optional frozen-core transfer: load a trained core, freeze all but I/O
+    # Setup for frozen core experiment (not for main training).
     transfer_cfg = cfg.get("transfer") or {}
     if transfer_cfg.get("source_checkpoint"):
         ckpt = torch.load(transfer_cfg["source_checkpoint"], map_location="cpu",
@@ -146,7 +112,6 @@ def training_loop(cfg):
         static_graph=True, bucket_cap_mb=50,
     )
 
-    # two LR groups: low LR for the conv encoder/decoder, normal for the core
     low_keys = ("patch_embedding", "downsample", "upsample", "patch_recovery")
     low, normal = [], []
     for name, p in model.named_parameters():
@@ -156,11 +121,6 @@ def training_loop(cfg):
     optimizer = torch.optim.AdamW(
         [{"params": low, "lr": cfg["training"]["low_lr"]},
          {"params": normal, "lr": cfg["training"]["normal_lr"]}],
-        # beta2=0.95 (was 0.9): a longer second-moment memory keeps the AdamW
-        # denominator stable. beta2=0.9 lets sqrt(v) collapse after a quiet
-        # stretch, so one larger gradient produces a huge update -> NaN (the
-        # "smooth then sudden cliff" we saw). 0.95 keeps responsiveness; use
-        # 0.999 for maximum stability if it recurs.
         betas=(0.9, 0.95), eps=1e-6, weight_decay=0,
     )
     scheduler = (torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -188,9 +148,7 @@ def training_loop(cfg):
         os.makedirs(ckpt_path, exist_ok=True)
     dist.barrier()
 
-    # Auto-resume: if this run dir already holds checkpoints (e.g. a chained job
-    # restarting after a SLURM time-limit kill), reload the latest shard for this
-    # rank and continue. Fresh runs (empty dir) just start at epoch 0.
+    # Auto-resume
     start_epoch = 0
     has_ckpt = os.path.isdir(ckpt_path) and any(
         f.endswith(".pt") for f in os.listdir(ckpt_path))
@@ -220,20 +178,15 @@ def training_loop(cfg):
             vloss = validate(valid_dl, model, loss_fn, sqrt_w, device, groups["DTP"])
             if is_root:
                 print(f"epoch {epoch}: valid weighted-MSE {vloss:.5f}")
-            # distributed per-variable RMSE + persistence/climatology baselines
-            # (reduced over JSpatial, gathered over JChannel — the full field is
-            # never gathered onto one rank)
             names, metrics = evaluate_all(
                 model, valid_dl, cfg["data"]["pressure_levels"], groups, device,
                 n_in_timesteps=cfg["data"]["n_in_timesteps"], baselines=True)
             if is_root:
                 msg = "  ".join(f"{k}={v.mean().item():.4f}" for k, v in metrics.items())
                 print(f"epoch {epoch}: mean RMSE  {msg}")
-                # long-format CSV for offline plots (per-level curves, heatmaps)
                 write_metrics_csv(os.path.join(results_path, "metrics.csv"),
                                   epoch, names, metrics)
 
-            # optional sample-field maps for the poster (gathered over JSpatial)
             dump_vars = cfg["training"].get("dump_maps_vars")
             if dump_vars:
                 dump_sample_maps(
@@ -249,9 +202,9 @@ def train_one_epoch(cfg, epoch, dl, model, optimizer, loss_fn, sqrt_w, device,
     Parameters
     ----------
     cfg : dict
-        The finalized study config (``training`` section is used).
+        The config.
     epoch : int
-        Current epoch index (also seeds the distributed sampler).
+        Current epoch index.
     dl : torch.utils.data.DataLoader
         Training dataloader.
     model : torch.nn.Module
@@ -261,7 +214,7 @@ def train_one_epoch(cfg, epoch, dl, model, optimizer, loss_fn, sqrt_w, device,
     loss_fn : LatitudeWeightedMSE
         Latitude-weighted MSE loss.
     sqrt_w : torch.Tensor
-        Square root of the spatial weights, passed to ``loss_fn``.
+        Square root of the spatial weights.
     device : torch.device
         Compute device.
     dtp_group : torch.distributed.ProcessGroup
@@ -292,13 +245,7 @@ def train_one_epoch(cfg, epoch, dl, model, optimizer, loss_fn, sqrt_w, device,
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
 
-        # Synchronized non-finite guard: forward/backward (with their collectives)
-        # always run on every rank, so the model shards/replicas stay in lockstep.
-        # Only the optimizer step is conditional, and the decision is all_reduced
-        # so ALL ranks agree -- if any rank's loss/grad is non-finite, everyone
-        # skips the step (weights keep their last good values). One bad batch then
-        # can't poison the weights and kill a 48h run; persistent divergence still
-        # aborts loudly.
+        # Guard to remove NaNs due to one bad training step (model instable at start).
         finite = bool(torch.isfinite(loss).all()) and bool(torch.isfinite(grad_norm).all())
         bad = torch.tensor(0.0 if finite else 1.0, device=device)
         dist.all_reduce(bad, op=dist.ReduceOp.MAX)
@@ -341,7 +288,7 @@ def validate(dl, model, loss_fn, sqrt_w, device, dtp_group):
     loss_fn : LatitudeWeightedMSE
         Latitude-weighted MSE loss.
     sqrt_w : torch.Tensor
-        Square root of the spatial weights, passed to ``loss_fn``.
+        Square root of the spatial weights.
     device : torch.device
         Compute device.
     dtp_group : torch.distributed.ProcessGroup

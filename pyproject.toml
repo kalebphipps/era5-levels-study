@@ -9,14 +9,6 @@ description = "Does 37 vs 13 ERA5 pressure levels matter? A deterministic SWIN s
 readme = "README.md"
 requires-python = ">=3.12"
 
-# NOTE: `beast` is installed SEPARATELY and editable from your own checkout:
-#   pip install -e /path/to/beast
-#   pip install -e /path/to/beast/libs/jigsaw   # jigsaw is a beast git submodule,
-#                                                 # imported as a top-level package,
-#                                                 # and NOT in beast's pyproject deps
-# (torch_blue installs automatically as a beast pyproject dependency.) None of
-# these are listed here so this package doesn't try to resolve the in-flux beast
-# stack from a registry. See slurm/setup_env.sh for the full sequence.
 dependencies = [
     "torch",
     "numpy",
@@ -25,8 +17,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Offline figure generation (scripts/plot_results.py) — install on your laptop:
-#   pip install -e ".[plots]"
 plots = ["matplotlib", "pandas"]
 
 [tool.hatch.build.targets.wheel]
@@ -36,12 +26,10 @@ packages = ["era5_levels"]
 target-version = "py312"
 
 [tool.ruff.lint]
-# E/F = pyflakes+pycodestyle, I = isort, D/D417 = numpy-style docstrings.
 select = ["E", "F", "I", "D", "D417"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-# Scripts are CLI entrypoints; their module docstrings document usage.
 "scripts/*" = ["D103"]
 
 [tool.ruff.lint.pydocstyle]

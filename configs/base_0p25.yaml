@@ -1,17 +1,13 @@
-# Shared core config for the 13-vs-37 study at 0.25 degrees (720 x 1440).
-# This file is IDENTICAL for both runs — the only difference comes from the
-# levels{13,37}.yaml overlay (pressure_levels + data paths). Keeping everything
-# here byte-identical is what makes the comparison fair: only patch_embedding /
-# patch_recovery channel counts change, the whole SWIN core is unchanged.
+# Base config for 0.25 degrees!
 
 data:
-    dt: 6                                   # forecast step in hours (one zarr timestep)
-    data_path: "PLACEHOLDER.zarr"           # set in the overlay; train & valid share one store (split by time range)
+    dt: 6
+    data_path: "PLACEHOLDER.zarr"           # Set in overlay.
     constant_masks_path: "constant_masks"
     constant_masks: ["soil_type_normalized.npy", "topography_normalized.npy", "land_mask.npy"]
-    normalization_dir: "PLACEHOLDER"        # dir with norm_mean.npy / norm_std.npy (set in overlay)
-    train_time_range: ["2000-01-01", "2018-12-31"]
-    valid_time_range: ["2019-01-01", "2019-12-31"]
+    normalization_dir: "PLACEHOLDER"        # set in overlay.
+    train_time_range: ["2000-01-01", "2021-12-31"]
+    valid_time_range: ["2022-01-01", "2022-12-31"]
     train_subset: -1
     valid_subset: -1
     dataset_subsampling: 1
@@ -20,61 +16,42 @@ data:
     num_workers: 4
     xlat: 720
     xlon: 1440
-    n_in_timesteps: 2                       # 1 or 2 supported
-    n_out_timesteps: 1                       # required by the dataloader
+    n_in_timesteps: 2
+    n_out_timesteps: 1
     pressure_levels: [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
-    # ^ default = 13; overridden by the overlay. n_variables / channels are
-    #   DERIVED from this list in era5_levels/config.py — do not set them here.
 
 model:
-    embedding_dimension: 512                # core width — same for 13 & 37. Raise on H200/Ruby.
-    patch_size: 2                           # 720x1440 -> 360x720 latent
+    embedding_dimension: 512
+    patch_size: 2
     n_attn_heads: [8, 16, 8]
-    n_attn_blocks: [1, 1, 1]                # outer / inner / outer SWIN depths
-    # Windows for the single-node (parallelism 4, jspatial=2) layout. The model
-    # asserts these on the longitude (width=1440, patch_size=2):
-    #   window_outer[1] divides 1440/(jspatial*patch)   = 360   (24 -> 15 ✓)
-    #   window_inner[1] divides 1440/(jspatial*2*patch) = 180   (12 -> 15 ✓)
-    # window_*[0] (lat) just need to be even and divide the latent heights
-    # (360 then 180); 12 works. Validated by configs/smoke_dist.yaml.
+    n_attn_blocks: [1, 1, 1]
     window_size_outer: [12, 24]
     window_size_inner: [12, 12]
-    noise_dim: 32                           # unused when nice_norm: False; kept for ctor
-    nice_norm: False                        # deterministic — no NICE noise conditioning
+    noise_dim: 32
+    nice_norm: False
     latent_rollout: 1
-    bayesian: False                         # deterministic study
-    # n_input_channels / n_output_channels are derived (do not set).
+    bayesian: False
 
 training:
     tf32: True
-    n_samples: 1                            # deterministic (no ensemble)
-    n_epochs: 1                             # train both runs to the SAME budget
+    n_samples: 1
+    n_epochs: 20
     batch_size: 1
     lr_scheduler: True
-    low_lr: 0.00001                         # encoder/decoder conv LR
-    normal_lr: 0.0001                       # core LR
+    low_lr: 0.00001
+    normal_lr: 0.0001
     dtype: float32
-    autocast: False         # jigsaw's custom backward can't mix bf16/float32; run pure float32
-                            # (revisit for speed only if jigsaw's matmul backward is patched to cast)
+    autocast: False
     timings: False
     checkpoint_interval: 1000
     flash_attn: True
-    # Validation logs per-variable RMSE + persistence/climatology baselines to
-    # <results>/metrics.csv each epoch (for offline poster plots). Optionally
-    # dump full (lat,lon) prediction/truth/error maps for a few variables:
-    # dump_maps_vars: ["geopotential_500", "2m_temperature", "temperature_850"]
 
 jigsaw:
-    parallelism: 4                          # = jspatial * jchannel (must match mesh_dims)
+    parallelism: 4
     type: jigsaw
 
-# experts, dp, up(sample), jigsaw-spatial, jigsaw-channel  -> product = #GPUs.
-# [1,1,1,2,2] = 4 GPUs = ONE node (simplest; no multi-node NCCL). 2-way channel
-# split x 2-way longitude split. experts=1 -> universal expert (no hardcoded
-# level slicing); up=1 -> deterministic (no sample parallelism). To scale to a
-# full node of 8 (e.g. accelerated-h200-8) later: [1,1,1,4,2] + parallelism 8.
 mesh_dims: [1, 1, 1, 2, 2]
 
-# Optional frozen-core transfer (leave commented for normal runs):
+# Optional frozen-core transfer
 # transfer:
 #     source_checkpoint: "/path/to/other-level-model/checkpoints/cp-....pt"

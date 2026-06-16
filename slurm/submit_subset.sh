@@ -1,20 +1,8 @@
 #!/bin/bash
-# CPU-only 13-level subset of the 1.5deg 37-level zarr. Reads the whole 37-level
-# store (~9 TB for 40yr hourly) -> writes the 84-feature 13-level store (~3.4 TB).
-# Resumable: re-run (or chain) and it continues from the existing output.
-#
-# Defaults to FTP's Intel Sapphire Rapids partition (free compute), like the
-# coarsen jobs. IMPORTANT: this reads + writes the workspace (/hkfs/work/
-# workspace); if FTP can't see it (the `ls $IN` guard below will fail fast), run
-# on HoreKa instead by setting  --partition=cpuonly .
-#
-#   export VENV=$WS/venv
-#   IN=$WS/data/era5_37level_1p5.zarr OUT=$WS/data/era5_13level_1p5.zarr \
-#   NORM_IN=data/normalization_1p5_37 NORM_OUT=data/normalization_1p5_13 \
-#       sbatch slurm/submit_subset.sh
+# Create subsets of 37 pressure level zarr.
 #
 #SBATCH --job-name=subset_13
-#SBATCH --partition=intel-spr        # FTP CPU (Sapphire Rapids). HoreKa fallback: cpuonly
+#SBATCH --partition=intel-spr
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32

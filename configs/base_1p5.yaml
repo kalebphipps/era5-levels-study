@@ -1,25 +1,13 @@
-# Shared core config for the 13-vs-37 study at ~1.5 degrees (120 x 240).
-# Same fairness rule as base_0p25: IDENTICAL for both runs except the levels
-# overlay (pressure_levels + data paths). At this resolution a plausible,
-# baseline-beating global model is trainable in hours-to-days on a few GPUs.
-#
-#   srun ... --config configs/base_1p5.yaml --overlay configs/levels37_1p5.yaml
-#
-# Reuses the validated distributed path (parallelism 4, mesh [1,1,1,2,2]); the
-# grid is tiny so float32 domain-parallel is plenty fast. Run the dummy
-# distributed smoke with --config base_1p5 first to confirm the windows tile.
+# Shared core config for the 1.5 degree models.
 
 data:
     dt: 6
-    data_path: "PLACEHOLDER.zarr"           # set in the overlay; train & valid share one store (split by time range)
-    # Absolute path so it resolves the same with or without DATA_DIR set. The
-    # 1.5deg masks were coarsened from the 0.25deg ones to 120x240 (same grid as
-    # the data). Constant masks are level-independent -> identical for 13 and 37.
+    data_path: "PLACEHOLDER.zarr"           # set in the overlay!
     constant_masks_path: "/hkfs/work/workspace/scratch/xk5289-level_comparison/era5-levels-study/data/constant_masks_1p5"
     constant_masks: ["soil_type_normalized.npy", "topography_normalized.npy", "land_mask.npy"]
-    normalization_dir: "PLACEHOLDER"
-    train_time_range: ["2000-01-01", "2021-12-31"]   # 22 years (smallest acceptable window)
-    valid_time_range: ["2022-01-01", "2022-12-31"]   # held-out test year
+    normalization_dir: "PLACEHOLDER" # set in the overlay!
+    train_time_range: ["2000-01-01", "2021-12-31"]
+    valid_time_range: ["2022-01-01", "2022-12-31"]
     train_subset: -1
     valid_subset: -1
     dataset_subsampling: 1
@@ -30,22 +18,13 @@ data:
     xlon: 240
     n_in_timesteps: 2
     n_out_timesteps: 1
-    pressure_levels: [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
-    # ^ default 13; overridden by the overlay. channels are DERIVED from this.
+    pressure_levels: [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50] # Override in overlay.
 
 model:
-    embedding_dimension: 512                 # cheap grid -> can afford depth/width
-    patch_size: 2                            # 120x240 -> 60x120 latent
+    embedding_dimension: 512
+    patch_size: 2
     n_attn_heads: [8, 16, 8]
-    n_attn_blocks: [2, 3, 2]                 # tiny_bellbeast-shaped depth (extra bottleneck block)
-    # Window constraints (jspatial=2, patch=2, 120x240). beast asserts:
-    #   - ALL four dims must be EVEN.
-    #   - width dims: outer[1] | 60 (=240/(jspatial*patch)),
-    #                 inner[1] | 30 (=240/(jspatial*2*patch)).
-    #   - height dims must divide the latent (60 outer / 30 inner) to tile.
-    # So inner[1] must be an EVEN divisor of 30 -> {2,6,10,30} (15 is invalid!).
-    # Bumped from [6,12]/[6,6] toward tiny_bellbeast's receptive field; attention
-    # is a small fraction of the d^2-dominated cost, so ~+10% compute, not more.
+    n_attn_blocks: [2, 3, 2]
     window_size_outer: [12, 30]
     window_size_inner: [10, 10]
     noise_dim: 32
@@ -56,17 +35,13 @@ model:
 training:
     tf32: True
     n_samples: 1
-    # 22yr hourly (~193k samples) is a BIG epoch -- 20 was unrealistic for 48h.
-    # TUNE after the first epoch: read the "epoch 0: ... (Y min)" line and set
-    # n_epochs ~= floor(40h / Y). Keep it IDENTICAL for 13 and 37 (the cosine LR
-    # is sized to this number, and equal epochs = equal, fair budget).
-    n_epochs: 16                             # ~9.5 steps/s probe -> ~2.8h/epoch (dp=2) -> ~16 fit in 48h; cosine LR sized to this
+    n_epochs: 16
     batch_size: 1
     lr_scheduler: True
     low_lr: 0.00001
     normal_lr: 0.0001
     dtype: float32
-    autocast: False                          # jigsaw custom backward can't mix bf16/float32
+    autocast: False
     timings: False
     checkpoint_interval: 1000
     flash_attn: True
@@ -76,8 +51,4 @@ jigsaw:
     parallelism: 4
     type: jigsaw
 
-# 8 GPUs = 4-GPU domain-parallel model (jspatial 2 x jchannel 2) x dp 2 replicas.
-# jspatial can't go to 4 at 1.5deg (inner window won't divide the 240-lon grid),
-# so we scale with DATA parallelism (dp=2). One accelerated-h200-8 node = 8 GPUs.
-# For a 4-GPU run instead, use [1, 1, 1, 2, 2].
 mesh_dims: [1, 2, 1, 2, 2]

@@ -1,24 +1,11 @@
-"""Deterministic training loss for the levels study.
-
-The full model trains a Bayesian ELBO; we are deliberately ignoring that and
-training a plain deterministic model. The objective is a **latitude-weighted
-MSE**: we multiply prediction and target by sqrt(cos-latitude weights) and take
-MSE, which is exactly the deterministic branch already used in the reference
-training loop (`loss_fn(pred * sqrt_w, y * sqrt_w)` with `MSELoss`). Weighting by
-sqrt on both sides makes the per-pixel squared error scale with the cell area.
-"""
+"""Extracted deterministic training loss from BEAST."""
 
 import torch
 import torch.nn as nn
 
 
 class LatitudeWeightedMSE(nn.Module):
-    """MSE on area-weighted residuals.
-
-    Pass ``sqrt(spatial_weights)`` at call time. Using the same
-    ``get_spatial_weights`` helper as the rest of beast keeps the weighting
-    identical between the training loss and the evaluation metrics.
-    """
+    """MSE on area-weighted residuals."""
 
     def __init__(self) -> None:
         super().__init__()

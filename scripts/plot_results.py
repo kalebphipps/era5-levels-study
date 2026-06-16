@@ -1,26 +1,4 @@
-"""Offline poster figures from the study outputs.
-
-Runs on a laptop (matplotlib + pandas + numpy) — no beast / GPU. Reads the
-`metrics.csv` files written during validation and the `.npy` map dumps, and
-produces the poster figures:
-
-  1. per-level RMSE curves        (13 vs 37, with persistence/climatology baselines)
-  2. 13-vs-37 improvement heatmap (variable x level, % RMSE change)
-  3. learning curves              (mean RMSE vs epoch)
-  4. forecast/error maps          (pred | truth | error) from the .npy dumps
-
-Examples
---------
-    # both runs -> curves + heatmap + per-run learning curves
-    python scripts/plot_results.py \
-        --csv13 $WS/results/levels13/metrics.csv \
-        --csv37 $WS/results/levels37/metrics.csv \
-        --maps-dir $WS/results/levels37/maps/epoch_0 \
-        --out figures/
-
-    # single run is fine too (curves + learning curve + baselines, no heatmap)
-    python scripts/plot_results.py --csv37 $WS/results/levels37/metrics.csv --out figures/
-"""
+"""Plots for poster."""
 
 from __future__ import annotations
 
@@ -35,7 +13,6 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
-# Pressure variables we usually show; surface vars are handled separately.
 DEFAULT_PRESSURE_VARS = ["geopotential", "temperature", "u_component_of_wind",
                          "specific_humidity"]
 
@@ -96,11 +73,8 @@ def latest_epoch(df: pd.DataFrame) -> pd.DataFrame:
     return df[df["epoch"] == df["epoch"].max()].copy()
 
 
-# ---------------------------------------------------------------------------- #
-# 1. per-level RMSE curves
-# ---------------------------------------------------------------------------- #
 def plot_per_level_curves(df13, df37, variables, out_dir):
-    """Plot per-level RMSE curves (13 vs 37) and save ``per_level_rmse.png``.
+    """Plot per-level RMSE curves (13 vs 37) and save ``per_level_rmse.pdf``.
 
     Parameters
     ----------
@@ -140,7 +114,7 @@ def plot_per_level_curves(df13, df37, variables, out_dir):
     for ax in axes.flat[n:]:
         ax.set_visible(False)
     fig.tight_layout()
-    p = os.path.join(out_dir, "per_level_rmse.png")
+    p = os.path.join(out_dir, "per_level_rmse.pdf")
     fig.savefig(p, dpi=160, bbox_inches="tight")
     plt.close(fig)
     print("wrote", p)
@@ -154,7 +128,7 @@ def plot_improvement_heatmap(df13, df37, out_dir):
 
     The cell value is the percentage RMSE change of 37-level relative to
     13-level (negative means 37-level is better). Saves
-    ``improvement_heatmap.png``.
+    ``improvement_heatmap.pdf``.
 
     Parameters
     ----------
@@ -196,7 +170,7 @@ def plot_improvement_heatmap(df13, df37, out_dir):
     ax.set_title("RMSE change: 37-level vs 13-level  [%]  (blue = 37 better)")
     fig.colorbar(im, ax=ax, fraction=0.025)
     fig.tight_layout()
-    p = os.path.join(out_dir, "improvement_heatmap.png")
+    p = os.path.join(out_dir, "improvement_heatmap.pdf")
     fig.savefig(p, dpi=160, bbox_inches="tight")
     plt.close(fig)
     print("wrote", p)
@@ -206,7 +180,7 @@ def plot_improvement_heatmap(df13, df37, out_dir):
 # 3. learning curves
 # ---------------------------------------------------------------------------- #
 def plot_learning_curves(dfs, out_dir):
-    """Plot mean RMSE vs epoch for each run and save ``learning_curves.png``.
+    """Plot mean RMSE vs epoch for each run and save ``learning_curves.pdf``.
 
     Parameters
     ----------
@@ -233,7 +207,7 @@ def plot_learning_curves(dfs, out_dir):
     ax.grid(alpha=0.3)
     ax.legend(fontsize=7)
     fig.tight_layout()
-    p = os.path.join(out_dir, "learning_curves.png")
+    p = os.path.join(out_dir, "learning_curves.pdf")
     fig.savefig(p, dpi=160, bbox_inches="tight")
     plt.close(fig)
     print("wrote", p)
@@ -246,7 +220,7 @@ def plot_maps(maps_dir, out_dir):
     """Render prediction/truth/error map triptychs from ``.npy`` dumps.
 
     For every ``<var>_pred.npy`` in ``maps_dir`` (with matching ``_true`` /
-    ``_err``), saves a ``map_<var>.png`` panel.
+    ``_err``), saves a ``map_<var>.pdf`` panel.
 
     Parameters
     ----------
@@ -274,21 +248,21 @@ def plot_maps(maps_dir, out_dir):
             ax.set_xticks([]); ax.set_yticks([])
             fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
         fig.tight_layout()
-        p = os.path.join(out_dir, f"map_{var}.png")
+        p = os.path.join(out_dir, f"map_{var}.pdf")
         fig.savefig(p, dpi=160, bbox_inches="tight")
         plt.close(fig)
         print("wrote", p)
 
 
 def main():
-    """Parse CLI args and render the requested poster figures."""
+    """Parse args and render the requested poster figures."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv13", help="metrics.csv from the 13-level run")
     ap.add_argument("--csv37", help="metrics.csv from the 37-level run")
     ap.add_argument("--maps-dir", help="dir with <var>_{pred,true,err}.npy")
     ap.add_argument("--vars", nargs="*", default=DEFAULT_PRESSURE_VARS,
                     help="pressure variables for the per-level curves")
-    ap.add_argument("--out", default="figures", help="output dir for PNGs")
+    ap.add_argument("--out", default="figures", help="output dir for figures")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)

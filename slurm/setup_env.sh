@@ -1,16 +1,5 @@
 #!/usr/bin/env bash
-# One-time environment setup on HoreKa (venv, no container).
-#
-#   export WS=$(ws_find levels)            # a workspace, NOT $HOME (quota)
-#   export BEAST_DIR=$HOME/beast           # your local beast checkout
-#   bash slurm/setup_env.sh
-#
-# Installs a CUDA-matched PyTorch, then editable-installs beast AND its jigsaw
-# submodule, then this study package. NOTE: jigsaw is a git submodule of beast
-# (libs/jigsaw) and is imported as a top-level `jigsaw` package; it is NOT listed
-# in beast's pyproject, so `pip install -e beast` alone does not provide it. We
-# init the submodule and install it explicitly. torch_blue IS a git dependency in
-# beast's pyproject and installs automatically.
+# One-time environment setup.
 set -euo pipefail
 
 : "${WS:?Set WS, e.g. export WS=\$(ws_find levels)}"
@@ -32,8 +21,6 @@ pip install --upgrade pip
 # Make sure the jigsaw submodule is checked out in the beast tree.
 git -C "$BEAST_DIR" submodule update --init --recursive
 
-# PyTorch first (CUDA wheel), then beast (editable, brings torch_blue), then the
-# jigsaw submodule (editable, top-level `jigsaw` import), then this study repo.
 pip install --upgrade torch --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}"
 pip install -e "$BEAST_DIR"
 pip install -e "$BEAST_DIR/libs/jigsaw"

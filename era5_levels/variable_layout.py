@@ -1,20 +1,4 @@
-"""Single source of truth for the variable / pressure-level channel layout.
-
-The model treats pressure levels as part of the channel axis, so the *order* of
-features here must match the order of the `feature` coordinate in the zarr and
-the order of the normalization arrays (`norm_mean.npy` / `norm_std.npy`).
-
-Channel order:
-    [ surface variables ][ pressure_var_0 x all levels ][ pressure_var_1 x ... ]
-
-The number of pressure levels is NOT hardcoded: it is driven by config
-(`data.pressure_levels`). This module provides the helpers that every consumer
-(expert masks, evaluation metric indices, normalization, channel counting)
-derives from, so switching between 13 and 37 levels is a config change only.
-
-This module is intentionally dependency-free (stdlib only) so it can be imported
-both from the main training code and from the standalone normalization scripts.
-"""
+"""Save the variable layout to avoid errors when loading."""
 
 # Surface variables, in channel order.
 SURFACE_VARIABLES = [
@@ -80,15 +64,14 @@ PRESSURE_LEVELS_37 = [
     1,
 ]
 
-# Expert name -> the set of *base* variable names that expert "owns".
-# Pressure base names match the variable at every level.
+# Not used currently.
 EXPERT_VARIABLE_GROUPS = {
     "surface": list(SURFACE_VARIABLES),
     "wind": ["u_component_of_wind", "v_component_of_wind", "vertical_velocity"],
     "thermodynamic": ["geopotential", "temperature", "specific_humidity"],
 }
 
-# expert_group.rank() -> expert name. Any rank not listed = "universal" (all vars).
+# Not used currently.
 EXPERT_RANK_TO_NAME = {1: "surface", 2: "wind", 3: "thermodynamic"}
 
 _SURFACE_SET = set(SURFACE_VARIABLES)
@@ -161,8 +144,6 @@ def num_variables(levels, surface=SURFACE_VARIABLES, pressure=PRESSURE_VARIABLES
 def variable_base_name(feature_name):
     """Strip the ``_<level>`` suffix from a pressure feature name.
 
-    Surface names are returned unchanged.
-
     Parameters
     ----------
     feature_name : str
@@ -198,8 +179,6 @@ def feature_index_map(levels):
 
 def variable_group_mask(base_names, levels):
     """Build a boolean mask marking features whose base name is in a group.
-
-    Used to construct expert loss-weight masks for any level count.
 
     Parameters
     ----------

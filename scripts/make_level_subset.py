@@ -1,26 +1,4 @@
-"""Write a 13-level subset zarr (+ subset normalization) from a 37-level zarr.
-
-The beast dataset loads ALL features present in a zarr, so the 13-level run
-needs its own store containing exactly the 84 features (6 surface + 6 pressure x
-13), in build_ordered_variables(13) order. This selects them by position from
-the 37-level store, and (optionally) subsets the matching norm_mean/std .npy so
-you don't recompute normalization.
-
-RESUMABLE + writes zarr v2 (same as coarsen_to_1p5.py): it reads the whole
-37-level store (~9 TB for 40 years hourly), so run it as a SLURM job, not on the
-login node. Re-running with the same args continues from however many timesteps
-are already written.
-
-    python scripts/make_level_subset.py \
-        --in  $WS/data/era5_37level_1p5.zarr \
-        --out $WS/data/era5_13level_1p5.zarr \
-        --norm-in data/normalization_1p5_37 \
-        --norm-out data/normalization_1p5_13
-
-The 13 levels are scattered within the 37-level channel layout (each variable
-keeps only 13 of its 37 levels), so the selection is by computed index, not a
-contiguous slice.
-"""
+"""Write a 13-level subset zarr and subset normalization from a 37-level zarr."""
 
 import argparse
 import os
@@ -51,7 +29,7 @@ def subset_indices() -> list[int]:
 
 
 def main():
-    """Parse CLI args and write the 13-level subset zarr (+ norm), resumably."""
+    """Parse args and write the 13-level subset zarr as well as norms."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="inp", required=True, help="37-level zarr")
     ap.add_argument("--out", required=True, help="output 13-level zarr")
@@ -67,7 +45,7 @@ def main():
     idx = subset_indices()
     assert len(idx) == 84, f"expected 84 features, got {len(idx)}"
 
-    # Normalization subset is cheap -> do it first (idempotent).
+    # Normalization subset
     if args.norm_in and args.norm_out:
         os.makedirs(args.norm_out, exist_ok=True)
         for name in ("norm_mean.npy", "norm_std.npy"):
@@ -81,7 +59,7 @@ def main():
     nlat, nlon = ds.sizes[args.lat], ds.sizes[args.lon]
     print(f"input: {dict(ds.sizes)}  ({n_total} timesteps) -> 84-feature subset", flush=True)
 
-    # Resume: how many timesteps already written?
+    # Resume
     done = 0
     if os.path.exists(args.out):
         try:
@@ -100,7 +78,6 @@ def main():
         stop = min(start + args.block, n_total)
         blk = ds.isel(time=slice(start, stop), feature=idx)
         blk = blk.chunk({"time": 1, "feature": nfeat, args.lat: nlat, args.lon: nlon})
-        # Drop inherited encoding (stale chunks + v2 Blosc codec) and write zarr v2.
         for name in blk.variables:
             blk[name].encoding.clear()
         if first:

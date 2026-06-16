@@ -1,18 +1,5 @@
 #!/usr/bin/env bash
-# Submit a CHAIN of training jobs that survive SLURM time-limit kills.
-#
-# Each job runs submit_train.sh against the SAME stable RUN_DIR and depends on
-# the previous one with `afterany` (so it starts whether the previous job
-# finished, was killed at the time limit, or failed). On start each job
-# auto-resumes from the latest checkpoint in RUN_DIR, so a long run is just
-# "N short jobs that hand off the checkpoint".
-#
-#   export WS=$(ws_find levels); export DATA_DIR=/zarr/root; export WORKDIR=$(pwd)
-#   bash slurm/submit_chain.sh configs/base_0p25.yaml configs/levels37.yaml 4
-#                              ^base                  ^overlay              ^#links (default 3)
-#
-# Run it once for levels13 and once for levels37 — they form two independent
-# chains and train in parallel.
+# Submit a CHAIN of training jobs.
 set -euo pipefail
 
 BASE="${1:?pass a base config, e.g. configs/base_0p25.yaml}"

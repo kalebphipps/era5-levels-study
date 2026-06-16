@@ -1,13 +1,9 @@
 #!/bin/bash
-# 1-GPU pipeline smoke test (random dummy data, tiny model). Run this FIRST to
-# confirm beast is installed and the loop executes end-to-end before scaling up.
-#
-#   export WS=$(ws_find levels); export WORKDIR=$(pwd)
-#   sbatch slurm/submit_smoke.sh
+# Mini smoke test.
 #
 #SBATCH --job-name=levels_smoke
-#SBATCH --partition=TODO_DEV_PARTITION   # a short dev/test queue
-#SBATCH --account=hk-project-test-p0028019   # HoreKa requires this. Override: sbatch --account=<other> ...
+#SBATCH --partition=TODO_DEV_PARTITION   # Add in with sbatch command
+#SBATCH --account=TODO_ACCOUNT # Add in with sbatch command
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:1
