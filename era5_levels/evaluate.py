@@ -315,6 +315,12 @@ def evaluate_all(model, dataloader, levels_full, groups, device, *,
         global_mse = ev.gather_along_dimension(
             local_sel, group=channel_group, dim=0, variable_size=True
         )
+        # Fail loud rather than silently-wrong: the channel split must reproduce
+        # exactly the expected variable list after the gather.
+        assert global_mse.shape[0] == len(names), (
+            f"channel gather produced {global_mse.shape[0]} values but expected "
+            f"{len(names)} variables ({k}) -- channel split/order mismatch"
+        )
         rmse = ev.rmse({"mse": global_mse})
         if data_std is not None:
             rmse = rmse * _std_for_names(ev, names, levels_full, data_std, rmse.device)
