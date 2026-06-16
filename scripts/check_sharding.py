@@ -1,29 +1,4 @@
-"""Pre-flight sharding check -- verify the distributed layout assumptions the
-study's training/evaluation rely on, in the real process mesh, as one mini job.
-
-Also doubles as a fast build smoke: it constructs the model + dataloader, so a
-window/divisibility or import error shows up here in ~30s instead of at the start
-of the real run.
-
-Checks (on rank 0):
-  [1] JSpatial (longitude) shards are EQUAL-sized -> the lat-weighted mean's
-      "mean of per-shard means = global mean" is valid.
-  [2] The channel split is even: local_out_channels * jchannel == n_out * n_vars.
-  [3] The input is laid out [ts0 vars | ts1 vars | ... | masks] per shard
-      (x_channels == n_in * local_out + masks), and the persistence slice has the
-      target's shape.
-  [4] evaluate_all runs end-to-end: gathered RMSE length == #variables, all
-      finite, AND the 6h persistence baseline BEATS climatology on average -- a
-      strong empirical signal that persistence slices the right channels (a
-      misaligned slice compares unrelated variables and loses to climatology).
-
-Run like a training job, with the SAME mesh as the run you are checking. For a
-quick 4-GPU dev check, add the probe4 overlay (mesh [1,1,1,2,2]):
-
-    srun python -u scripts/check_sharding.py \\
-        --config configs/base_1p5.yaml --overlay configs/levels37_1p5.yaml \\
-        --overlay configs/probe4.yaml
-"""
+"""Check sharding is correct."""
 
 from __future__ import annotations
 
@@ -31,7 +6,7 @@ import argparse
 
 
 def main() -> None:
-    """Build the model + dataloader in the mesh and check the layout assumptions."""
+    """Build the model and dataloader in the mesh and check the layout assumptions."""
     import torch
     import torch.distributed as dist
 
@@ -49,7 +24,6 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = finalize_config(load_config(args.config, args.overlay))
-    # Keep it fast: score only a small slice of the validation set.
     cfg["data"]["valid_subset"] = args.n_batches
 
     beast_api.bootstrap_distributed(cfg["mesh_dims"])
@@ -75,12 +49,13 @@ def main() -> None:
                         groups["DP"].rank(), groups["DP"].size(),
                         mode="validation", dtype=dtype)
 
-    x, y = next(iter(dl))
-    x, y = x.to(device), y.to(device)
+    # GBDataLoader yields (input, target, start_ns, end_ns) -- index like the
+    # training/eval loops do, don't unpack.
+    batch = next(iter(dl))
+    x, y = batch[0].to(device), batch[1].to(device)
     local_out = y.shape[1]
     fails: list[str] = []
 
-    # [1] equal JSpatial (longitude) shards
     sp = groups["JSpatial"]
     sp_size = dist.get_world_size(sp)
     if sp_size > 1:
@@ -96,7 +71,6 @@ def main() -> None:
     elif is_root:
         print("[1] JSpatial size 1 (longitude not split) -> n/a")
 
-    # [2] even channel split over JChannel
     jc = dist.get_world_size(groups["JChannel"])
     expected_out = n_out * num_variables(levels)
     ok2 = local_out * jc == expected_out
@@ -106,7 +80,6 @@ def main() -> None:
     if not ok2:
         fails.append("channel split does not tile the output variables")
 
-    # [3] input layout [ts0 | ts1 | ... | masks]
     mask_ch = x.shape[1] - n_in * local_out
     ok3 = mask_ch >= 0
     if is_root:
@@ -122,7 +95,6 @@ def main() -> None:
     if not ok3b:
         fails.append("persistence slice shape != target shape")
 
-    # [4] eval path + persistence beats climatology
     if is_root:
         print(f"[4] running evaluate_all over {args.n_batches} samples...", flush=True)
     names, res = evaluate_all(model, dl, levels, groups, device,
