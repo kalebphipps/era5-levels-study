@@ -95,6 +95,26 @@ def main() -> None:
     if not ok3b:
         fails.append("persistence slice shape != target shape")
 
+    # [3c] DEFINITIVE layout check: the persistence slice (last input timestep)
+    # and the target are the SAME variables 6h apart, so each channel's spatial
+    # field is strongly correlated with the target's. A misaligned slice (wrong
+    # variables) gives ~0. This is robust to the tiny-window climatology artefact
+    # that makes persistence-vs-climatology unreliable on a short subset.
+    pf = persist[0].float().reshape(local_out, -1)
+    yf = y[0].float().reshape(local_out, -1)
+    pf = pf - pf.mean(dim=1, keepdim=True)
+    yf = yf - yf.mean(dim=1, keepdim=True)
+    corr = (pf * yf).sum(1) / (pf.norm(dim=1) * yf.norm(dim=1) + 1e-8)
+    local_mean_corr = torch.nan_to_num(corr, nan=0.0).mean()
+    dist.all_reduce(local_mean_corr, op=dist.ReduceOp.SUM)
+    mean_corr = (local_mean_corr / dist.get_world_size()).item()
+    ok3c = mean_corr > 0.3
+    if is_root:
+        print(f"[3c] persistence<->target per-channel spatial corr = {mean_corr:.3f} "
+              f"-> {'ok (aligned)' if ok3c else 'FAIL (layout misaligned; ~0 expected if wrong)'}")
+    if not ok3c:
+        fails.append("persistence/target correlation ~0 -> input channel layout misaligned")
+
     if is_root:
         print(f"[4] running evaluate_all over {args.n_batches} samples...", flush=True)
     names, res = evaluate_all(model, dl, levels, groups, device,
@@ -107,15 +127,13 @@ def main() -> None:
         cm = res["climatology"].mean().item()
         print(f"[4] gathered len == #names: {gathered_ok}; all finite: {finite}")
         print(f"    mean RMSE  model={mm:.3f}  persistence={pm:.3f}  climatology={cm:.3f}")
-        beats = pm < cm
-        print(f"[4] persistence < climatology (6h baseline / layout sanity): "
-              f"{'ok' if beats else 'FAIL -> persistence channel layout suspect'}")
+        print("    (note: over this tiny subset climatology is a ~2-day mean and"
+              " unusually strong; persistence<climatology only holds over the full"
+              " year, so it is NOT used as a pass/fail signal here -- [3c] is.)")
         if not gathered_ok:
             fails.append("gathered RMSE length != number of variables")
         if not finite:
             fails.append("non-finite RMSE")
-        if not beats:
-            fails.append("persistence does NOT beat climatology -> input layout suspect")
 
         print("=" * 64)
         if fails:
