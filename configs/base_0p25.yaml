@@ -6,8 +6,7 @@
 
 data:
     dt: 6                                   # forecast step in hours (one zarr timestep)
-    train_data_path: "PLACEHOLDER.zarr"     # set per-levels in the overlay
-    valid_data_path: "PLACEHOLDER.zarr"
+    data_path: "PLACEHOLDER.zarr"           # set in the overlay; train & valid share one store (split by time range)
     constant_masks_path: "constant_masks"
     constant_masks: ["soil_type_normalized.npy", "topography_normalized.npy", "land_mask.npy"]
     normalization_dir: "PLACEHOLDER"        # dir with norm_mean.npy / norm_std.npy (set in overlay)

@@ -7,6 +7,5 @@ data:
     # The 0.25° 13-level store + norm are not in the repo yet — carve them from
     # the 37-level 0.25° data the same way the 1.5° subset was made
     # (scripts/make_level_subset.py), then point these at the results.
-    train_data_path: "era5_13level_train.zarr"      # TODO: 0.25° 13-level zarr (carve from 37-level)
-    valid_data_path: "era5_13level_train.zarr"      # TODO: same
+    data_path: "era5_13level_train.zarr"      # TODO: 0.25° 13-level zarr (carve from 37-level; train & valid share it, split by time range)
     normalization_dir: "data/normalization/0p25_13"   # TODO: 84-channel 0.25° norm (carve via make_level_subset.py)

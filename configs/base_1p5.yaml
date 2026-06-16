@@ -11,8 +11,7 @@
 
 data:
     dt: 6
-    train_data_path: "PLACEHOLDER.zarr"     # set per-levels in the overlay
-    valid_data_path: "PLACEHOLDER.zarr"
+    data_path: "PLACEHOLDER.zarr"           # set in the overlay; train & valid share one store (split by time range)
     # Absolute path so it resolves the same with or without DATA_DIR set. The
     # 1.5deg masks were coarsened from the 0.25deg ones to 120x240 (same grid as
     # the data). Constant masks are level-independent -> identical for 13 and 37.

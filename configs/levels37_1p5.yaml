@@ -2,6 +2,5 @@
 # n_variables = 6 surface + 6 pressure * 37 = 228 (derived).
 data:
     pressure_levels: [1000, 975, 950, 925, 900, 875, 850, 825, 800, 775, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 250, 225, 200, 175, 150, 125, 100, 70, 50, 30, 20, 10, 7, 5, 3, 2, 1]
-    train_data_path: "/hkfs/work/workspace/scratch/xk5289-level_comparison/data/era5_37level_1p5.zarr"     # coarsen_to_1p5.py output
-    valid_data_path: "/hkfs/work/workspace/scratch/xk5289-level_comparison/data/era5_37level_1p5.zarr"
+    data_path: "/hkfs/work/workspace/scratch/xk5289-level_comparison/data/era5_37level_1p5.zarr"     # coarsen_to_1p5.py output (train & valid share it, split by time range)
     normalization_dir: "/hkfs/work/workspace/scratch/xk5289-level_comparison/era5-levels-study/data/normalization/1p5/37"

@@ -132,10 +132,19 @@ def finalize_config(cfg: dict) -> dict:
                 prod *= m
         mesh[mesh.index(-1)] = max(world // prod, 1)
 
+    # --- single data path ----------------------------------------------------
+    # Train and validation read the SAME store (split by time range, not by
+    # path). Configs give one `data_path`; mirror it into the train/valid keys
+    # the dataloader consumes, so this works whether the dataloader reads
+    # `data_path` or the legacy train_data_path / valid_data_path keys.
+    if "data_path" in data:
+        data["train_data_path"] = data["valid_data_path"] = data["data_path"]
+
     # --- prepend DATA_DIR to data paths if set -------------------------------
     data_dir = os.environ.get("DATA_DIR")
     if data_dir:
-        for key in ("train_data_path", "valid_data_path", "constant_masks_path"):
+        for key in ("data_path", "train_data_path", "valid_data_path",
+                    "constant_masks_path"):
             if key in data and not data[key].startswith("/"):
                 data[key] = os.path.join(data_dir, data[key])
     workdir = os.environ.get("WORKDIR")
