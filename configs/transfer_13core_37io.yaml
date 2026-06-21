@@ -1,0 +1,6 @@
+# Frozen-core transfer overlay freeze the trained 13-level core and train only the 37-level I/O
+transfer:
+    source_run_dir: "/hkfs/work/workspace/scratch/xk5289-level_comparison/results/levels13_1p5"
+
+training:
+    n_epochs: 6
