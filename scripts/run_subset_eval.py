@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import os
 
 import torch
 
 from era5_levels.variable_layout import PRESSURE_LEVELS_13, PRESSURE_LEVELS_37
+
+DEFAULT_MAP_VARS = ["geopotential_500", "2m_temperature", "temperature_850"]
 
 
 def check_indices():
@@ -34,7 +38,7 @@ def run_distributed(args):
 
     from era5_levels import beast_api, checkpoint
     from era5_levels.config import finalize_config, load_config
-    from era5_levels.evaluate import validate_per_level
+    from era5_levels.evaluate import dump_sample_maps, validate_per_level
     from era5_levels.train import build_model
 
     cfg = finalize_config(load_config(args.config, args.overlay))
@@ -78,11 +82,27 @@ def run_distributed(args):
         model, valid_dl, cfg["data"]["pressure_levels"], groups, device,
         subset_levels=PRESSURE_LEVELS_13, data_std=data_std,
     )
+
+    # Maps.
+    if args.dump_maps:
+        dump_sample_maps(
+            model, valid_dl, cfg["data"]["pressure_levels"], groups, device,
+            args.map_vars, os.path.join(args.results_dir, "maps"),
+        )
+
     if dist.get_rank() == 0:
+        out_csv = args.out_csv or os.path.join(args.results_dir, "subset_metrics.csv")
+        os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
+        with open(out_csv, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["variable", "rmse"])
+            for n, v in zip(names, rmse.tolist()):
+                w.writerow([n, f"{v:.6f}"])
         print(f"{'variable':32s} {'rmse':>12s}")
         for n, v in zip(names, rmse.tolist()):
             print(f"{n:32s} {v:12.4f}")
         print(f"\nmean RMSE over 13 common levels: {rmse.mean().item():.4f}")
+        print(f"wrote {out_csv}")
     dist.barrier()
     dist.destroy_process_group()
 
@@ -94,6 +114,12 @@ if __name__ == "__main__":
     ap.add_argument("--config")
     ap.add_argument("--overlay", action="append", default=[])
     ap.add_argument("--results-dir", help="run dir containing checkpoints/ to evaluate")
+    ap.add_argument("--out-csv", help="where to write the per-variable RMSE "
+                    "(default <results-dir>/subset_metrics.csv)")
+    ap.add_argument("--dump-maps", action="store_true",
+                    help="also dump <var>_{pred,true,err}.npy maps for the poster")
+    ap.add_argument("--map-vars", nargs="*", default=DEFAULT_MAP_VARS,
+                    help="variables to dump maps for (with --dump-maps)")
     args = ap.parse_args()
 
     if args.check_indices:
