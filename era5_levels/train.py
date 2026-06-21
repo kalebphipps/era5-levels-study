@@ -96,10 +96,15 @@ def training_loop(cfg):
 
     # Setup for frozen core experiment (not for main training).
     transfer_cfg = cfg.get("transfer") or {}
-    if transfer_cfg.get("source_checkpoint"):
-        ckpt = torch.load(transfer_cfg["source_checkpoint"], map_location="cpu",
-                          weights_only=False)
-        sd = ckpt.get("model_state_dict", ckpt)
+    source_run_dir = transfer_cfg.get("source_run_dir")
+    source_ckpt = transfer_cfg.get("source_checkpoint")
+    if source_run_dir or source_ckpt:
+        if source_run_dir:
+            sd = checkpoint.load_latest_model_states(source_run_dir)[0]
+        else:
+            ckpt = torch.load(source_ckpt, map_location="cpu", weights_only=False)
+            sd = ckpt.get("model_state_dict", ckpt)
+        sd = {k[7:] if k.startswith("module.") else k: v for k, v in sd.items()}
         loaded = load_core_from_checkpoint(model, sd)
         n_tr, n_fr = freeze_core(model)
         if is_root:
