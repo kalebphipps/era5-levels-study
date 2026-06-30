@@ -6,7 +6,7 @@ BASE="${1:?pass a base config, e.g. configs/base_0p25.yaml}"
 OVERLAY="${2:?pass a levels overlay, e.g. configs/levels37.yaml}"
 N="${3:-3}"
 
-: "${WS:?Set WS, e.g. export WS=\$(ws_find levels)}"
+: "${WS:=$(ws_find levels 2>/dev/null || echo /hkfs/work/workspace/scratch/xk5289-level_comparison)}"
 RUN_DIR="${RUN_DIR:-$WS/results/$(basename "$OVERLAY" .yaml)}"
 mkdir -p "$RUN_DIR" logs
 

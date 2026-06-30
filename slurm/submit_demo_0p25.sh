@@ -15,7 +15,7 @@
 
 set -euo pipefail
 module purge 2>/dev/null || true
-: "${WS:?Set WS, e.g. export WS=\$(ws_find levels)}"; : "${WORKDIR:=$(pwd)}"
+: "${WS:=$(ws_find levels 2>/dev/null || echo /hkfs/work/workspace/scratch/xk5289-level_comparison)}"; : "${WORKDIR:=$(pwd)}"
 source "$WS/venv/bin/activate"
 mkdir -p logs
 
