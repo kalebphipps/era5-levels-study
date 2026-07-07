@@ -9,7 +9,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
-from . import beast_api, checkpoint
+from . import beast_api, checkpoint, telemetry
 from .evaluate import dump_sample_maps, evaluate_all, write_metrics_csv
 from .losses import LatitudeWeightedMSE
 from .transfer import freeze_core, load_core_from_checkpoint
@@ -153,6 +153,11 @@ def training_loop(cfg):
         os.makedirs(ckpt_path, exist_ok=True)
     dist.barrier()
 
+    # Telemetry.
+    telemetry.write_run_summary(results_path, cfg, model, groups, device)
+    global_batch = cfg["training"]["batch_size"] * groups["DP"].size()
+    step_logger = telemetry.StepThroughputLogger(results_path, global_batch, device)
+
     # Auto-resume
     start_epoch = 0
     has_ckpt = os.path.isdir(ckpt_path) and any(
@@ -171,12 +176,18 @@ def training_loop(cfg):
     for epoch in range(start_epoch, cfg["training"]["n_epochs"]):
         if scheduler is not None:
             scheduler.step(epoch)
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats(device)
         t0 = time.perf_counter()
         avg = train_one_epoch(cfg, epoch, train_dl, model, optimizer, loss_fn,
-                              sqrt_w, device, groups["DTP"], ckpt_path)
+                              sqrt_w, device, groups["DTP"], ckpt_path,
+                              step_logger=step_logger)
+        epoch_seconds = time.perf_counter() - t0
         if is_root:
             print(f"epoch {epoch}: train weighted-MSE {avg:.5f} "
-                  f"({(time.perf_counter() - t0) / 60:.1f} min)")
+                  f"({epoch_seconds / 60:.1f} min)")
+        telemetry.log_epoch(results_path, epoch, len(train_dl), epoch_seconds,
+                            global_batch, telemetry._peak_mem_gb(device), avg)
         checkpoint.save_checkpoint(ckpt_path, model, optimizer, epoch, 0, avg)
 
         if valid_dl is not None:
@@ -201,7 +212,7 @@ def training_loop(cfg):
 
 
 def train_one_epoch(cfg, epoch, dl, model, optimizer, loss_fn, sqrt_w, device,
-                    dtp_group, ckpt_path):
+                    dtp_group, ckpt_path, step_logger=None):
     """Train for one epoch and return the DTP-averaged mean loss.
 
     Parameters
@@ -275,6 +286,8 @@ def train_one_epoch(cfg, epoch, dl, model, optimizer, loss_fn, sqrt_w, device,
             checkpoint.save_checkpoint(ckpt_path, model, optimizer, epoch, i, loss_sum)
         if i % 50 == 0 and dist.get_rank() == 0:
             print(f"  epoch {epoch} step {i}/{len(dl)} loss {loss.item():.5f}")
+            if step_logger is not None:
+                step_logger.tick(epoch, i)
 
     dist.all_reduce(loss_sum, group=dtp_group)
     return loss_sum.item() / max(1, len(dl)) / dist.get_world_size(dtp_group)
