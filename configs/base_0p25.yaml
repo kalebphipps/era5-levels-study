@@ -3,7 +3,7 @@
 data:
     dt: 6
     data_path: "PLACEHOLDER.zarr"           # Set in overlay.
-    constant_masks_path: "constant_masks"
+    constant_masks_path: "/hkfs/work/workspace/scratch/xk5289-level_comparison/era5-levels-study/data/constant_masks"
     constant_masks: ["soil_type_normalized.npy", "topography_normalized.npy", "land_mask.npy"]
     normalization_dir: "PLACEHOLDER"        # set in overlay.
     train_time_range: ["2000-01-01", "2021-12-31"]
@@ -52,6 +52,4 @@ jigsaw:
 
 mesh_dims: [1, 1, 1, 2, 2]
 
-# Optional frozen-core transfer
-# transfer:
-#     source_checkpoint: "/path/to/other-level-model/checkpoints/cp-....pt"
+
